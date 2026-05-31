@@ -24,6 +24,7 @@ func NewRootCommand(invokedAs string) *cobra.Command {
 		Version:       version.String(),
 	}
 	root.AddCommand(newScanCommand())
+	root.AddCommand(newDiffCommand())
 	root.AddCommand(newVersionCommand())
 	return root
 }

@@ -49,22 +49,32 @@ func newScanCommand() *cobra.Command {
 	return cmd
 }
 
-// runScan resolves clients, selects the best usage tier, runs the engine, and renders.
+// runScan resolves clients, runs the engine, and renders the report.
+func runScan(ctx context.Context, f *scanFlags) error {
+	result, err := runEngine(ctx, f)
+	if err != nil {
+		return err
+	}
+	return render(result, f)
+}
+
+// runEngine resolves clients, selects the best usage tier, and runs the scan engine. It is
+// shared by the `scan` and `diff` commands so both see identical recommendations.
 //
 // The wiring here is intentionally thin; the heavy lifting lives in the bounded packages.
-func runScan(ctx context.Context, f *scanFlags) error {
+func runEngine(ctx context.Context, f *scanFlags) (model.ScanResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
 	clients, err := kube.Load(f.kubeContext, f.namespace)
 	if err != nil {
-		return fmt.Errorf("loading kube clients: %w", err)
+		return model.ScanResult{}, fmt.Errorf("loading kube clients: %w", err)
 	}
 
 	workloads, err := kube.Discover(ctx, clients, f.namespace)
 	if err != nil {
-		return fmt.Errorf("discovering workloads: %w", err)
+		return model.ScanResult{}, fmt.Errorf("discovering workloads: %w", err)
 	}
 
 	var warnings []string
@@ -89,11 +99,11 @@ func runScan(ctx context.Context, f *scanFlags) error {
 	}
 	result, err := engine.Run(ctx)
 	if err != nil {
-		return fmt.Errorf("scan: %w", err)
+		return model.ScanResult{}, fmt.Errorf("scan: %w", err)
 	}
 	result.Warnings = append(warnings, result.Warnings...)
 
-	return render(result, f)
+	return result, nil
 }
 
 // selectUsageProvider picks Tier 1 (Prometheus) when a URL is provided, otherwise Tier 0

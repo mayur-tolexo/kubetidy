@@ -26,7 +26,7 @@ This roadmap is intentionally public and open for discussion — please weigh in
 
 > Close the gap between "here's the waste" and "it's fixed" — reversibly.
 
-- [ ] `kubetidy diff` — render the exact resource patch
+- [x] `kubetidy diff` — render the exact, reversible `kubectl patch` per recommendation
 - [ ] `kubetidy pr` — open a GitOps pull request with the diff and `$/mo` delta in the title
 - [ ] GitHub Action / CI cost-guardrail ("this PR adds $400/mo")
 - [ ] Slack weekly digest (retention: puts kubetidy in a loop teams already run)
