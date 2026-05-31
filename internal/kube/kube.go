@@ -11,6 +11,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -20,6 +21,7 @@ import (
 type Clients struct {
 	Kube      kubernetes.Interface
 	Metrics   metricsv.Interface
+	Dynamic   dynamic.Interface
 	Context   string
 	Namespace string
 }
@@ -48,6 +50,13 @@ func Load(contextOverride, namespaceOverride string) (*Clients, error) {
 		return nil, fmt.Errorf("kube: creating metrics client: %w", err)
 	}
 
+	// The dynamic client reads/writes the UsageProfile CRD (kubetidy operator tier) without a
+	// generated typed scheme.
+	dynamicClient, err := dynamic.NewForConfig(restConfig)
+	if err != nil {
+		return nil, fmt.Errorf("kube: creating dynamic client: %w", err)
+	}
+
 	// Resolve the effective context name.
 	contextName := contextOverride
 	if contextName == "" {
@@ -72,6 +81,7 @@ func Load(contextOverride, namespaceOverride string) (*Clients, error) {
 	return &Clients{
 		Kube:      kubeClient,
 		Metrics:   metricsClient,
+		Dynamic:   dynamicClient,
 		Context:   contextName,
 		Namespace: namespace,
 	}, nil

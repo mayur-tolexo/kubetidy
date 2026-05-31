@@ -1,0 +1,57 @@
+# CustomResourceDefinition for kubetidy's usage historian.
+#
+# The kubetidy operator writes one UsageProfile per workload, recording decayed per-container
+# usage percentiles (and the encoded histogram state) so `kubectl tidy scan` can produce
+# Prometheus-grade recommendations with no Prometheus. The schema is intentionally permissive
+# (x-kubernetes-preserve-unknown-fields on status) so the operator can evolve the stored shape
+# without a CRD migration during the v1alpha1 phase.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: usageprofiles.kubetidy.io
+spec:
+  group: kubetidy.io
+  scope: Namespaced
+  names:
+    kind: UsageProfile
+    listKind: UsageProfileList
+    plural: usageprofiles
+    singular: usageprofile
+    shortNames:
+      - up
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Target
+          type: string
+          jsonPath: .spec.targetRef.name
+        - name: Samples
+          type: integer
+          jsonPath: .status.sampleCount
+        - name: Window(s)
+          type: number
+          jsonPath: .status.windowSeconds
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                targetRef:
+                  type: object
+                  properties:
+                    kind:
+                      type: string
+                    name:
+                      type: string
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true

@@ -188,6 +188,11 @@ func tierBase(t model.EvidenceTier) float64 {
 		return 0.9
 	case model.TierAllocated:
 		return 0.9
+	case model.TierOperator:
+		// Operator history (Tier 0) is real percentiles over time (not a single sample), so it
+		// earns near-Prometheus confidence — slightly below Tier 1 since it is derived from
+		// metrics-server's coarser cadence rather than Prometheus' fine-grained scrapes.
+		return 0.85
 	case model.TierSnapshot:
 		return 0.5
 	case model.TierStatic:
