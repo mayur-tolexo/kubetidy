@@ -1,6 +1,10 @@
-# kubetidy
+<p align="center">
+  <img src="docs/assets/logo.svg" alt="kubetidy" width="380">
+</p>
 
-> **See your cluster's wasted dollars in 20 seconds — no Prometheus required.**
+<p align="center">
+  <strong>See your cluster's wasted dollars in 20 seconds — no Prometheus required.</strong>
+</p>
 
 `kubetidy` is a Kubernetes-native CLI that scores your cluster's efficiency, quantifies
 wasted spend in **real dollars**, and gives you evidence-backed, **action-ready** rightsizing
@@ -9,20 +13,9 @@ recommendations — and tells you *why*.
 It is read-only and safe to run anywhere. It works with just the Kubernetes API +
 metrics-server (no Prometheus needed), and gets sharper when Prometheus is available.
 
-```text
-kubetidy scan  ·  context: prod-us-east  ·  tier: 1 (Prometheus)
-
-  Cluster Efficiency Score:  41 / 100   ▇▇▇▇░░░░░░
-  Rightsizing waste:         $7,420 / month
-
-  TOP RECOMMENDATIONS
-  ─────────────────────────────────────────────────────────
-  checkout-api    cpu 2000m→320m   mem 4Gi→1.1Gi   -$210/mo   conf 96%
-    evidence: P95 cpu 280m, max mem 0.9Gi over 14d · 1.2M samples
-  search-indexer  cpu 4000m→1500m  mem 8Gi→6Gi     -$180/mo   conf 91%
-
-  Run `kubetidy scan --explain checkout-api` for the full math.
-```
+<p align="center">
+  <img src="docs/assets/demo.svg" alt="kubectl tidy scan demo" width="760">
+</p>
 
 ---
 
