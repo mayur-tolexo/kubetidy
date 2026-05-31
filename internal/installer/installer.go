@@ -53,18 +53,17 @@ type Options struct {
 	// to the CRD. When false, only the CRD is installed (useful for GitOps setups that manage
 	// the Deployment separately).
 	IncludeOperator bool
-	// Image, when non-empty, overrides the operator container image in the embedded manifest.
-	// The embedded default (defaultOperatorImage) is a local-only dev tag that is not pullable
-	// on a real cluster, so a real install must set this to a published image.
+	// Image, when non-empty, overrides the operator container image in the embedded manifest
+	// (defaultOperatorImage). Use it to pin a version tag or point at a private mirror.
 	Image string
 	// Log receives one-line progress messages. nil discards them.
 	Log func(string)
 }
 
-// defaultOperatorImage is the image hard-coded in the embedded operator manifest. It is a
-// local/kind-only tag (loaded via `kind load`), NOT a pullable registry image — a real
-// cluster install must override it with Options.Image.
-const defaultOperatorImage = "kubetidy/operator:dev"
+// defaultOperatorImage is the image hard-coded in the embedded operator manifest. It is the
+// published Docker Hub image; callers may override it with Options.Image (e.g. a private
+// registry mirror or a specific version tag).
+const defaultOperatorImage = "docker.io/mayurdas1991/kubetidy-operator:latest"
 
 func (o Options) log(msg string) {
 	if o.Log != nil {

@@ -89,16 +89,6 @@ func runInit(ctx context.Context, f *initFlags) error {
 		return fmt.Errorf("init: building discovery client: %w", err)
 	}
 
-	// Warn loudly when installing the operator without a real image: the embedded default is
-	// a kind-only tag that will ImagePullBackOff on a real cluster, leaving scans on the
-	// limited snapshot tier.
-	if !f.crdOnly && f.image == "" {
-		_, _ = fmt.Fprintln(os.Stdout,
-			"⚠  No --image given: deploying the operator with the local-only dev image, which will\n"+
-				"   not pull on a real cluster. Pass --image <registry>/kubetidy-operator:<tag>, or use\n"+
-				"   `make operator-deploy` for a local kind cluster.")
-	}
-
 	opts := installer.Options{
 		IncludeOperator: !f.crdOnly,
 		Image:           f.image,

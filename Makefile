@@ -13,6 +13,10 @@ LDFLAGS    := -s -w -X $(PKG)/internal/version.Version=$(VERSION) -X $(PKG)/inte
 GOLANGCI_LINT ?= $(shell go env GOPATH)/bin/golangci-lint
 GOLANGCI_VERSION ?= v2.6.0
 
+# operator image (Docker Hub)
+OPERATOR_IMAGE ?= docker.io/mayurdas1991/kubetidy-operator
+OPERATOR_TAG   ?= latest
+
 # kind / demo settings
 KIND_CLUSTER   := kubetidy
 KIND_CONFIG    := hack/kind/cluster.yaml
@@ -137,10 +141,20 @@ prometheus: ## Deploy a minimal Prometheus into the cluster (unlocks Tier 1)
 crd-install: ## Install just the UsageProfile CRD into the kind cluster
 	kubectl --context kind-$(KIND_CLUSTER) apply -f config/crd/usageprofiles.yaml
 
+.PHONY: operator-image
+operator-image: ## Build the operator container image ($(OPERATOR_IMAGE):$(OPERATOR_TAG))
+	docker build -t $(OPERATOR_IMAGE):$(OPERATOR_TAG) -f hack/operator/Dockerfile .
+	@echo "built image $(OPERATOR_IMAGE):$(OPERATOR_TAG)"
+
+.PHONY: operator-push
+operator-push: operator-image ## Build and push the operator image to Docker Hub (run `docker login` first)
+	docker push $(OPERATOR_IMAGE):$(OPERATOR_TAG)
+	@echo "pushed $(OPERATOR_IMAGE):$(OPERATOR_TAG) — clusters can now `kubectl tidy init`"
+
 .PHONY: operator-deploy
 operator-deploy: ## Build, load, and deploy the kubetidy operator into the kind cluster (Tier 0)
-	docker build -t kubetidy/operator:dev -f hack/operator/Dockerfile .
-	kind load docker-image kubetidy/operator:dev --name $(KIND_CLUSTER)
+	docker build -t $(OPERATOR_IMAGE):$(OPERATOR_TAG) -f hack/operator/Dockerfile .
+	kind load docker-image $(OPERATOR_IMAGE):$(OPERATOR_TAG) --name $(KIND_CLUSTER)
 	kubectl --context kind-$(KIND_CLUSTER) apply -f config/crd/usageprofiles.yaml
 	kubectl --context kind-$(KIND_CLUSTER) apply -f config/operator/operator.yaml
 	kubectl --context kind-$(KIND_CLUSTER) -n kubetidy-system rollout status deployment/kubetidy-operator --timeout=120s
