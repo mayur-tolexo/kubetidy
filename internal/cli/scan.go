@@ -27,6 +27,16 @@ type scanFlags struct {
 	memGiBMonth   float64
 }
 
+// clientLoader resolves Kubernetes clients from kubeconfig. It is a seam: production uses
+// kube.Load, tests inject a fake so the orchestration in runEngineWithClients is hermetic.
+type clientLoader func(contextOverride, namespaceOverride string) (*kube.Clients, error)
+
+// loadClients is the production loader, overridable in tests.
+var loadClients clientLoader = kube.Load
+
+// discoverWorkloads is the production discovery function, overridable in tests.
+var discoverWorkloads = kube.Discover
+
 func newScanCommand() *cobra.Command {
 	f := &scanFlags{}
 	cmd := &cobra.Command{
@@ -58,10 +68,9 @@ func runScan(ctx context.Context, f *scanFlags) error {
 	return render(result, f)
 }
 
-// runEngine resolves clients, selects the best usage tier, and runs the scan engine. It is
-// shared by the `scan` and `diff` commands so both see identical recommendations.
-//
-// The wiring here is intentionally thin; the heavy lifting lives in the bounded packages.
+// runEngine resolves clients (with a live progress spinner) then runs the testable
+// orchestration. It is shared by the `scan`, `diff`, and `pr` commands so all three see
+// identical recommendations.
 func runEngine(ctx context.Context, f *scanFlags) (model.ScanResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -71,13 +80,19 @@ func runEngine(ctx context.Context, f *scanFlags) (model.ScanResult, error) {
 	sp.start()
 	defer sp.finish()
 
-	clients, err := kube.Load(f.kubeContext, f.namespace)
+	clients, err := loadClients(f.kubeContext, f.namespace)
 	if err != nil {
 		return model.ScanResult{}, fmt.Errorf("loading kube clients: %w", err)
 	}
-
 	sp.update("discovering workloads…")
-	workloads, err := kube.Discover(ctx, clients, f.namespace)
+	return runEngineWithClients(ctx, f, clients, sp)
+}
+
+// runEngineWithClients holds the testable orchestration: given resolved clients, discover
+// workloads, choose the usage tier, price, and run the scan engine. No kubeconfig I/O, so it
+// is exercised hermetically with fake clientsets. sp may be nil (no progress reporting).
+func runEngineWithClients(ctx context.Context, f *scanFlags, clients *kube.Clients, sp *spinner) (model.ScanResult, error) {
+	workloads, err := discoverWorkloads(ctx, clients, f.namespace)
 	if err != nil {
 		return model.ScanResult{}, fmt.Errorf("discovering workloads: %w", err)
 	}
@@ -102,8 +117,10 @@ func runEngine(ctx context.Context, f *scanFlags) (model.ScanResult, error) {
 		Context:   clients.Context,
 		Namespace: f.namespace,
 	}
-	engine.Progress = func(done, total int) {
-		sp.update(fmt.Sprintf("analyzing workloads… %d/%d", done, total))
+	if sp != nil {
+		engine.Progress = func(done, total int) {
+			sp.update(fmt.Sprintf("analyzing workloads… %d/%d", done, total))
+		}
 	}
 	result, err := engine.Run(ctx)
 	if err != nil {
@@ -114,11 +131,14 @@ func runEngine(ctx context.Context, f *scanFlags) (model.ScanResult, error) {
 	return result, nil
 }
 
-// selectUsageProvider picks Tier 1 (Prometheus) when a URL is provided, otherwise Tier 0
-// (metrics-server). Degradations are appended to warnings.
+// selectUsageProvider picks the best available usage tier:
+//   - an explicit --prometheus-url forces Tier 1;
+//   - otherwise kubetidy auto-detects an in-cluster Prometheus (the common kube-prometheus /
+//     Helm service names) and uses it when reachable, upgrading the scan to Tier 1 with no
+//     configuration — this is what gets a user off low-confidence Tier 0 automatically;
+//   - failing that, it falls back to Tier 0 (metrics-server).
 //
-// IMPLEMENTED BY AGENT (auto-detection of Prometheus is a Phase-1 enhancement): for the MVP
-// this honors --prometheus-url, else falls back to metrics-server.
+// Every fallback is recorded in warnings so the report explains why a given tier was used.
 func selectUsageProvider(clients *kube.Clients, f *scanFlags, warnings *[]string) usage.Provider {
 	if f.prometheusURL != "" {
 		p, err := usage.NewPrometheusProvider(f.prometheusURL, f.window)
@@ -126,6 +146,14 @@ func selectUsageProvider(clients *kube.Clients, f *scanFlags, warnings *[]string
 			return p
 		}
 		*warnings = append(*warnings, fmt.Sprintf("Prometheus unavailable (%v); using metrics-server", err))
+		return usage.NewMetricsServerProvider(clients.Metrics)
+	}
+
+	if url := usage.DetectPrometheus(clients.Kube); url != "" {
+		if p, err := usage.NewPrometheusProvider(url, f.window); err == nil {
+			*warnings = append(*warnings, fmt.Sprintf("auto-detected Prometheus at %s (Tier 1)", url))
+			return p
+		}
 	}
 	return usage.NewMetricsServerProvider(clients.Metrics)
 }
