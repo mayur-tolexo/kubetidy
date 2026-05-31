@@ -25,12 +25,61 @@ const mib = 1024 * 1024
 // When usage has no data for a metric (P95/Max == 0) the current request/limit for that
 // metric is preserved (we never recommend zero from missing data). Memory is rounded up to
 // the nearest whole MiB; CPU is rounded to whole millicores. No value can go negative.
+//
+// # Snapshot safety (Tier 0 / metrics-server)
+//
+// A single point-in-time sample (model.TierSnapshot, Samples==1) is a weak, dangerous
+// signal: an idle workload momentarily using 1m of CPU or 5Mi of memory does NOT mean it
+// can safely run with a 1m / 5Mi request — under load it would throttle or OOM. A real run
+// produced terrifying advice like "redis-master mem 512Mi -> 7Mi" and "console cpu
+// 2000m -> 1m" precisely because we trusted one snapshot. To keep snapshot-driven advice
+// from being dangerous we apply three extra protections, all gated on
+// usage.Tier == model.TierSnapshot:
+//
+//  1. Extra headroom: policy.SnapshotHeadroom is added on top of the base headroom for both
+//     CPU and memory, so a snapshot reserves a much wider safety margin than a historical
+//     percentile would (with defaults this is +115% instead of +15%).
+//  2. Floors: the proposed request is never dropped below policy.MinCPURequestMillicores /
+//     policy.MinMemoryRequestBytes. Each floor is disabled when its policy value is 0, and
+//     a floor is only applied when there is real usage for that metric (we never invent a
+//     request where current was 0 and usage is 0 — the zero-usage fallback that preserves
+//     current still wins there). This stops "512Mi -> 5Mi" style cuts.
+//  3. Downsize-only: when policy.DownsizeOnlyOnSnapshot is set we trust "you over-asked"
+//     (so we clamp a request down toward current) but never "you should grow" — a single
+//     idle sample must not push a request above its current value.
+//
+// Non-snapshot tiers keep all of the original behavior, including the ability to grow a
+// request above current; only the floors apply to them (when configured).
 func Recommend(current model.ResourceSpec, usage model.UsageStats, policy model.Policy) model.ResourceSpec {
 	out := model.ResourceSpec{}
 
+	snapshot := usage.Tier == model.TierSnapshot
+
+	// Effective headroom: snapshots get the base headroom PLUS the extra snapshot headroom
+	// to compensate for the weak single-sample signal. All other tiers use the base.
+	cpuHeadroom := policy.CPUHeadroom
+	memHeadroom := policy.MemoryHeadroom
+	if snapshot {
+		cpuHeadroom += policy.SnapshotHeadroom
+		memHeadroom += policy.SnapshotHeadroom
+	}
+
 	// --- CPU ---
 	if usage.CPUMillicores.P95 > 0 {
-		cpu := roundNonNegative(usage.CPUMillicores.P95 * (1 + policy.CPUHeadroom))
+		cpu := roundNonNegative(usage.CPUMillicores.P95 * (1 + cpuHeadroom))
+
+		// Floor: never recommend below the configured minimum (0 disables it). Applied only
+		// because we have real usage for this metric.
+		if policy.MinCPURequestMillicores > 0 && cpu < policy.MinCPURequestMillicores {
+			cpu = policy.MinCPURequestMillicores
+		}
+
+		// Downsize-only on snapshot: a single sample must never justify growth.
+		if snapshot && policy.DownsizeOnlyOnSnapshot &&
+			current.Requests.CPUMillicores > 0 && cpu > current.Requests.CPUMillicores {
+			cpu = current.Requests.CPUMillicores
+		}
+
 		out.Requests.CPUMillicores = cpu
 		if policy.SetCPULimit {
 			out.Limits.CPUMillicores = cpu
@@ -44,7 +93,21 @@ func Recommend(current model.ResourceSpec, usage model.UsageStats, policy model.
 
 	// --- Memory ---
 	if usage.MemoryBytes.Max > 0 {
-		mem := roundUpMiB(roundNonNegative(usage.MemoryBytes.Max * (1 + policy.MemoryHeadroom)))
+		mem := roundUpMiB(roundNonNegative(usage.MemoryBytes.Max * (1 + memHeadroom)))
+
+		// Floor: never recommend below the configured minimum (0 disables it). Applied only
+		// because we have real usage for this metric. Round the floor up to a whole MiB so
+		// the proposal stays MiB-aligned.
+		if policy.MinMemoryRequestBytes > 0 && mem < roundUpMiB(policy.MinMemoryRequestBytes) {
+			mem = roundUpMiB(policy.MinMemoryRequestBytes)
+		}
+
+		// Downsize-only on snapshot: a single sample must never justify growth.
+		if snapshot && policy.DownsizeOnlyOnSnapshot &&
+			current.Requests.MemoryBytes > 0 && mem > current.Requests.MemoryBytes {
+			mem = current.Requests.MemoryBytes
+		}
+
 		out.Requests.MemoryBytes = mem
 		if policy.MemoryLimitEqualsRequest {
 			out.Limits.MemoryBytes = mem

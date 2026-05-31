@@ -161,6 +161,148 @@ func TestRecommend(t *testing.T) {
 				Limits:   amounts(10, 2*mib),
 			},
 		},
+		{
+			// The dangerous real-world case: console cpu 2000m, a single snapshot reading
+			// 1m. We must NOT propose 1m. With the snapshot headroom 1*(1+1.15)=~2m, which
+			// is below the 10m floor, so the floor wins. It is far below current so
+			// downsize-only is satisfied. Result: the floor, never 1m.
+			name: "snapshot idle cpu clamps to floor not to one millicore",
+			current: model.ResourceSpec{
+				Requests: amounts(2000, 0),
+			},
+			usage: model.UsageStats{
+				CPUMillicores: model.Percentiles{P95: 1},
+				Tier:          model.TierSnapshot,
+				Samples:       1,
+			},
+			policy: model.DefaultPolicy(),
+			want: model.ResourceSpec{
+				// floor = 10m; no memory usage so current memory (0) preserved.
+				Requests: amounts(10, 0),
+				Limits:   amounts(0, 0),
+			},
+		},
+		{
+			// The dangerous real-world case: redis-master mem 512Mi, a single snapshot
+			// reading ~5Mi. With the snapshot headroom 5*(1+1.15)=~11Mi, below the 32Mi
+			// floor => floor wins. Never 6Mi.
+			name: "snapshot idle mem clamps to floor not to a few MiB",
+			current: model.ResourceSpec{
+				Requests: amounts(0, 512*mib),
+			},
+			usage: model.UsageStats{
+				MemoryBytes: model.Percentiles{Max: 5 * mib},
+				Tier:        model.TierSnapshot,
+				Samples:     1,
+			},
+			policy: model.DefaultPolicy(),
+			want: model.ResourceSpec{
+				// floor = 32Mi; no cpu usage so current cpu (0) preserved; mem limit ==
+				// request under default policy.
+				Requests: amounts(0, 32*mib),
+				Limits:   amounts(0, 32*mib),
+			},
+		},
+		{
+			// Snapshot must never grow a request when DownsizeOnlyOnSnapshot is set.
+			// current cpu 100m, snapshot p95 80m => 80*(1+1.15)=172m would exceed current;
+			// clamp back down to current 100m.
+			name: "snapshot never grows cpu above current when downsize-only",
+			current: model.ResourceSpec{
+				Requests: amounts(100, 0),
+			},
+			usage: model.UsageStats{
+				CPUMillicores: model.Percentiles{P95: 80},
+				Tier:          model.TierSnapshot,
+				Samples:       1,
+			},
+			policy: model.DefaultPolicy(),
+			want: model.ResourceSpec{
+				Requests: amounts(100, 0),
+				Limits:   amounts(0, 0),
+			},
+		},
+		{
+			// Same protection for memory: current 64Mi, snapshot 50Mi =>
+			// 50*(1+1.15)=~108Mi would grow; clamp to current 64Mi.
+			name: "snapshot never grows mem above current when downsize-only",
+			current: model.ResourceSpec{
+				Requests: amounts(0, 64*mib),
+			},
+			usage: model.UsageStats{
+				MemoryBytes: model.Percentiles{Max: 50 * mib},
+				Tier:        model.TierSnapshot,
+				Samples:     1,
+			},
+			policy: model.DefaultPolicy(),
+			want: model.ResourceSpec{
+				Requests: amounts(0, 64*mib),
+				Limits:   amounts(0, 64*mib),
+			},
+		},
+		{
+			// Snapshot downsize where the computed value sits between the floor and
+			// current: keep the computed value (not the floor, not current).
+			// current cpu 2000m, p95 100m => 100*(1+1.15)=215m. Above floor 10m, below
+			// current 2000m => 215m.
+			name: "snapshot downsize keeps computed value between floor and current",
+			current: model.ResourceSpec{
+				Requests: amounts(2000, 0),
+			},
+			usage: model.UsageStats{
+				CPUMillicores: model.Percentiles{P95: 100},
+				Tier:          model.TierSnapshot,
+				Samples:       1,
+			},
+			policy: model.DefaultPolicy(),
+			want: model.ResourceSpec{
+				Requests: amounts(215, 0),
+				Limits:   amounts(0, 0),
+			},
+		},
+		{
+			// Non-snapshot (historical) gets only the base headroom and IS allowed to grow
+			// above current. current cpu 100m, p95 200m => 200*(1+0.15)=230m, kept.
+			name: "historical can grow above current with base headroom only",
+			current: model.ResourceSpec{
+				Requests: amounts(100, 64*mib),
+			},
+			usage: model.UsageStats{
+				CPUMillicores: model.Percentiles{P95: 200},
+				MemoryBytes:   model.Percentiles{Max: 100 * mib},
+				Tier:          model.TierHistorical,
+				Samples:       30,
+			},
+			policy: model.DefaultPolicy(),
+			want: model.ResourceSpec{
+				// 200*1.15=230; 100Mi*1.15=115Mi.
+				Requests: amounts(230, 115*mib),
+				Limits:   amounts(0, 115*mib),
+			},
+		},
+		{
+			// Floors are skipped when set to 0: a snapshot with no floor and no
+			// downsize-only just applies the snapshot headroom.
+			name: "zero floor disables floor",
+			current: model.ResourceSpec{
+				Requests: amounts(2000, 0),
+			},
+			usage: model.UsageStats{
+				CPUMillicores: model.Percentiles{P95: 1},
+				Tier:          model.TierSnapshot,
+				Samples:       1,
+			},
+			policy: model.Policy{
+				CPUHeadroom:      0.15,
+				MemoryHeadroom:   0.15,
+				SnapshotHeadroom: 1.0,
+			},
+			want: model.ResourceSpec{
+				// 1*(1+1.15)=2.15 -> round 2; no floor, no downsize-only clamp.
+				Requests: amounts(2, 0),
+				Limits:   amounts(0, 0),
+			},
+		},
 	}
 
 	for _, tt := range tests {

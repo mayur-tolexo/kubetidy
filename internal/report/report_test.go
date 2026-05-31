@@ -47,30 +47,81 @@ func fixture() model.ScanResult {
 	}
 }
 
-func TestTableScoreAndWasteFormatting(t *testing.T) {
+// snapshotFixture mirrors the dangerous Tier-0 case: a single live snapshot with a loud
+// safety caveat and a workload that idles at scan time but must not be cut to nothing.
+func snapshotFixture() model.ScanResult {
+	return model.ScanResult{
+		Context:       "neevcloud",
+		Tier:          model.TierSnapshot,
+		WorkloadCount: 1,
+		Recommendations: []model.Recommendation{
+			{
+				Workload:       model.Workload{Kind: model.KindDeployment, Name: "redis-master", Namespace: "data"},
+				ContainerName:  "redis",
+				Current:        model.ResourceSpec{Requests: model.ResourceAmounts{CPUMillicores: 500, MemoryBytes: 512 * mib}},
+				Proposed:       model.ResourceSpec{Requests: model.ResourceAmounts{CPUMillicores: 100, MemoryBytes: 170 * mib}},
+				MonthlySavings: 12,
+				Confidence:     model.Confidence{Score: 0.35, Reason: "tier 0, 1 sample"},
+				Tier:           model.TierSnapshot,
+				Evidence:       "live cpu 40m, mem 130Mi (single snapshot)",
+			},
+		},
+		EfficiencyScore:   58,
+		TotalMonthlyWaste: 12,
+		Warnings: []string{
+			"Tier 0: recommendations come from a single live snapshot, not historical peaks — apply with caution.",
+		},
+	}
+}
+
+func TestTableBanner(t *testing.T) {
 	var buf bytes.Buffer
 	if err := Table(&buf, fixture(), Options{Color: false}); err != nil {
 		t.Fatalf("Table: %v", err)
 	}
 	out := buf.String()
 
-	wantHeader := "kubetidy scan  ·  context: prod-us-east  ·  tier: 1 (Prometheus)"
-	if !strings.Contains(out, wantHeader) {
-		t.Errorf("missing header line %q\n--- got ---\n%s", wantHeader, out)
+	wantBanner := "kubetidy · prod-us-east  ·  data: 1 (Prometheus)"
+	if !strings.Contains(out, wantBanner) {
+		t.Errorf("missing banner line %q\n--- got ---\n%s", wantBanner, out)
 	}
-	if !strings.Contains(out, "Cluster Efficiency Score:  41 / 100") {
-		t.Errorf("missing score line\n--- got ---\n%s", out)
+	// No ANSI escape codes on the golden path.
+	if strings.Contains(out, "\x1b[") {
+		t.Errorf("output contains ANSI codes with Color=false\n--- got ---\n%s", out)
+	}
+}
+
+func TestTableHeroSummary(t *testing.T) {
+	var buf bytes.Buffer
+	if err := Table(&buf, fixture(), Options{Color: false}); err != nil {
+		t.Fatalf("Table: %v", err)
+	}
+	out := buf.String()
+
+	if !strings.Contains(out, "Efficiency  41/100") {
+		t.Errorf("missing hero efficiency line\n--- got ---\n%s", out)
 	}
 	// Color off => no bar characters.
 	if strings.Contains(out, barFilled) || strings.Contains(out, barEmpty) {
 		t.Errorf("bar must not be drawn when Color=false\n--- got ---\n%s", out)
 	}
-	if !strings.Contains(out, "Rightsizing waste:  $7,420 / month") {
-		t.Errorf("missing thousands-separated waste\n--- got ---\n%s", out)
+	if !strings.Contains(out, "Waste       $7,420/mo  potential savings") {
+		t.Errorf("missing hero waste line\n--- got ---\n%s", out)
 	}
-	// No ANSI escape codes on the golden path.
-	if strings.Contains(out, "\x1b[") {
-		t.Errorf("output contains ANSI codes with Color=false\n--- got ---\n%s", out)
+	if !strings.Contains(out, "2 workloads can be rightsized") {
+		t.Errorf("missing one-line takeaway\n--- got ---\n%s", out)
+	}
+}
+
+func TestTakeawaySingular(t *testing.T) {
+	r := fixture()
+	r.Recommendations = r.Recommendations[:1]
+	var buf bytes.Buffer
+	if err := Table(&buf, r, Options{Color: false}); err != nil {
+		t.Fatalf("Table: %v", err)
+	}
+	if !strings.Contains(buf.String(), "1 workload can be rightsized") {
+		t.Errorf("singular takeaway wrong\n--- got ---\n%s", buf.String())
 	}
 }
 
@@ -85,14 +136,25 @@ func TestTableColorDrawsBar(t *testing.T) {
 	if !strings.Contains(out, wantBar) {
 		t.Errorf("expected bar %q in output\n--- got ---\n%s", wantBar, out)
 	}
+	// Colored output should carry ANSI escapes.
+	if !strings.Contains(out, "\x1b[") {
+		t.Errorf("expected ANSI codes with Color=true\n--- got ---\n%s", out)
+	}
 }
 
-func TestTableTopNTruncationAndSorting(t *testing.T) {
+func TestTableRecommendationRow(t *testing.T) {
 	var buf bytes.Buffer
 	if err := Table(&buf, fixture(), Options{Color: false, TopN: 1}); err != nil {
 		t.Fatalf("Table: %v", err)
 	}
 	out := buf.String()
+
+	// Header columns are present.
+	for _, col := range []string{"WORKLOAD", "CPU", "MEM", "SAVINGS", "CONF"} {
+		if !strings.Contains(out, col) {
+			t.Errorf("missing column header %q\n--- got ---\n%s", col, out)
+		}
+	}
 	// Highest savings (checkout-api, $210) must appear; search-api ($90) truncated.
 	if !strings.Contains(out, "checkout-api") {
 		t.Errorf("top rec missing\n--- got ---\n%s", out)
@@ -100,18 +162,53 @@ func TestTableTopNTruncationAndSorting(t *testing.T) {
 	if strings.Contains(out, "search-api") {
 		t.Errorf("TopN=1 should truncate lower rec\n--- got ---\n%s", out)
 	}
-	// The shown rec line format.
-	if !strings.Contains(out, "cpu 2000m→320m") {
+	if !strings.Contains(out, "2000m → 320m") {
 		t.Errorf("missing cpu transition\n--- got ---\n%s", out)
 	}
-	if !strings.Contains(out, "-$210/mo") {
+	// 4Gi -> ~1.1Gi adaptive memory.
+	if !strings.Contains(out, "4Gi → 1.1Gi") {
+		t.Errorf("missing adaptive mem transition\n--- got ---\n%s", out)
+	}
+	if !strings.Contains(out, "$210/mo") {
 		t.Errorf("missing savings\n--- got ---\n%s", out)
 	}
-	if !strings.Contains(out, "conf 96%") {
+	if !strings.Contains(out, "96%") {
 		t.Errorf("missing confidence\n--- got ---\n%s", out)
 	}
-	if !strings.Contains(out, "evidence: P95 cpu 280m") {
-		t.Errorf("missing evidence line\n--- got ---\n%s", out)
+	// Evidence is indented under the row with the └ marker.
+	if !strings.Contains(out, "    └ P95 cpu 280m") {
+		t.Errorf("missing indented evidence line\n--- got ---\n%s", out)
+	}
+}
+
+func TestTableAdaptiveMemoryNeverZeroGi(t *testing.T) {
+	var buf bytes.Buffer
+	if err := Table(&buf, snapshotFixture(), Options{Color: false}); err != nil {
+		t.Fatalf("Table: %v", err)
+	}
+	out := buf.String()
+
+	// 512Mi -> 170Mi must render in Mi, never as "0.0Gi".
+	if strings.Contains(out, "0.0Gi") {
+		t.Errorf("must never print 0.0Gi\n--- got ---\n%s", out)
+	}
+	if !strings.Contains(out, "512Mi → 170Mi") {
+		t.Errorf("missing sub-Gi adaptive mem rendering\n--- got ---\n%s", out)
+	}
+}
+
+func TestTableGrowRecommendationDistinct(t *testing.T) {
+	r := fixture()
+	// Make search-api a GROW recommendation (negative savings = costs more for reliability).
+	r.Recommendations[0].MonthlySavings = -7
+	var buf bytes.Buffer
+	if err := Table(&buf, r, Options{Color: false}); err != nil {
+		t.Fatalf("Table: %v", err)
+	}
+	out := buf.String()
+	// Grow rows are visually distinct: an up marker and a (grow) tag, not a plain saving.
+	if !strings.Contains(out, "↑ +$7/mo (grow)") {
+		t.Errorf("grow recommendation not shown distinctly\n--- got ---\n%s", out)
 	}
 }
 
@@ -131,17 +228,36 @@ func TestTableSortingOrderTopNZero(t *testing.T) {
 	}
 }
 
-func TestTableWarnings(t *testing.T) {
+func TestTableWarningsProminent(t *testing.T) {
+	var buf bytes.Buffer
+	if err := Table(&buf, snapshotFixture(), Options{}); err != nil {
+		t.Fatalf("Table: %v", err)
+	}
+	out := buf.String()
+
+	marker := "⚠  note: Tier 0:"
+	wi := strings.Index(out, marker)
+	if wi < 0 {
+		t.Fatalf("missing prominent warning marker %q\n--- got ---\n%s", marker, out)
+	}
+	// The warning must appear ABOVE the recommendations, not buried at the bottom.
+	ri := strings.Index(out, "redis-master")
+	if ri < 0 {
+		t.Fatalf("recommendation missing\n--- got ---\n%s", out)
+	}
+	if wi > ri {
+		t.Errorf("warning must appear before recommendations\nwarning@%d rec@%d\n--- got ---\n%s", wi, ri, out)
+	}
+}
+
+func TestTableLegendShown(t *testing.T) {
 	var buf bytes.Buffer
 	if err := Table(&buf, fixture(), Options{}); err != nil {
 		t.Fatalf("Table: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "notes:") {
-		t.Errorf("missing notes heading\n--- got ---\n%s", out)
-	}
-	if !strings.Contains(out, "- OpenCost unreachable") {
-		t.Errorf("missing warning\n--- got ---\n%s", out)
+	if !strings.Contains(out, "conf = confidence in this recommendation") {
+		t.Errorf("missing legend\n--- got ---\n%s", out)
 	}
 }
 
@@ -155,13 +271,17 @@ func TestTableEmptyRecommendations(t *testing.T) {
 		t.Fatalf("Table: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "No rightsizing recommendations.") {
+	if !strings.Contains(out, "✓ No rightsizing opportunities found — this cluster looks tidy.") {
 		t.Errorf("missing empty message\n--- got ---\n%s", out)
 	}
-	if !strings.Contains(out, "Rightsizing waste:  $0 / month") {
-		t.Errorf("missing zero waste\n--- got ---\n%s", out)
+	// Score/waste lines are still shown in the empty case.
+	if !strings.Contains(out, "Efficiency  41/100") {
+		t.Errorf("missing score line in empty case\n--- got ---\n%s", out)
 	}
-	if strings.Contains(out, "notes:") {
+	if !strings.Contains(out, "Waste       $0/mo") {
+		t.Errorf("missing zero waste in empty case\n--- got ---\n%s", out)
+	}
+	if strings.Contains(out, "⚠  note:") {
 		t.Errorf("notes should be absent with no warnings\n--- got ---\n%s", out)
 	}
 }
@@ -179,7 +299,7 @@ func TestTableExplainMatch(t *testing.T) {
 		t.Errorf("explain should render derivation\n--- got ---\n%s", out)
 	}
 	// Should NOT render the summary table.
-	if strings.Contains(out, "TOP RECOMMENDATIONS") {
+	if strings.Contains(out, "WORKLOAD") {
 		t.Errorf("explain must not render summary table\n--- got ---\n%s", out)
 	}
 }
@@ -204,7 +324,9 @@ func TestExplain(t *testing.T) {
 	out := buf.String()
 	checks := []string{
 		"Deployment/default/checkout-api  ·  container: checkout-api",
+		"change:",
 		"cpu:  2000m → 320m",
+		"mem:  4Gi → 1.1Gi",
 		"savings:  $210 / month",
 		"confidence:  96% (tier 1, 14d, low variance)",
 		"tier:  1 (Prometheus)",
@@ -226,8 +348,12 @@ func TestExplainNegativeSavings(t *testing.T) {
 	if err := Explain(&buf, rec); err != nil {
 		t.Fatalf("Explain: %v", err)
 	}
-	if !strings.Contains(buf.String(), "savings:  -$45 / month") {
-		t.Errorf("expected signed negative savings\n--- got ---\n%s", buf.String())
+	out := buf.String()
+	if !strings.Contains(out, "savings:  -$45 / month") {
+		t.Errorf("expected signed negative savings\n--- got ---\n%s", out)
+	}
+	if !strings.Contains(out, "grow for reliability") {
+		t.Errorf("expected grow clarification on negative savings\n--- got ---\n%s", out)
 	}
 }
 
@@ -280,6 +406,34 @@ func TestJSONStableAcrossCalls(t *testing.T) {
 	}
 	if a.String() != b.String() {
 		t.Errorf("JSON output not stable across calls")
+	}
+}
+
+func TestFormatMem(t *testing.T) {
+	cases := []struct {
+		bytes int64
+		want  string
+	}{
+		{0, "0"},
+		{512, "512B"},
+		{2 * kib, "2Ki"},
+		{170 * mib, "170Mi"},
+		{512 * mib, "512Mi"},
+		{2 * gib, "2Gi"},
+		{1181116006, "1.1Gi"}, // ~1.1Gi
+		{1536 * mib, "1.5Gi"},
+		// Critically: a tiny value never collapses to "0.0Gi".
+		{7 * mib, "7Mi"},
+		{1, "1B"},
+	}
+	for _, c := range cases {
+		got := formatMem(c.bytes)
+		if got != c.want {
+			t.Errorf("formatMem(%d) = %q, want %q", c.bytes, got, c.want)
+		}
+		if strings.Contains(got, "0.0Gi") {
+			t.Errorf("formatMem(%d) produced 0.0Gi", c.bytes)
+		}
 	}
 }
 
