@@ -17,7 +17,10 @@ GOLANGCI_VERSION ?= v2.6.0
 KIND_CLUSTER   := kubetidy
 KIND_CONFIG    := hack/kind/cluster.yaml
 DEMO_MANIFEST  := hack/kind/demo-workloads.yaml
+PROM_MANIFEST  := hack/kind/prometheus.yaml
+PROM_NS        := monitoring
 DEMO_NS        := kubetidy-demo
+PROM_URL       ?= http://prometheus-server.monitoring.svc:80
 
 # ANSI helpers for a readable `make help`.
 BLUE  := \033[36m
@@ -124,9 +127,19 @@ demo-deploy: ## Deploy over-provisioned demo workloads into the kind cluster
 	kubectl --context kind-$(KIND_CLUSTER) apply -f $(DEMO_MANIFEST)
 	kubectl --context kind-$(KIND_CLUSTER) -n $(DEMO_NS) rollout status deployment/checkout-api --timeout=120s
 
+.PHONY: prometheus
+prometheus: ## Deploy a minimal Prometheus into the cluster (unlocks Tier 1)
+	kubectl --context kind-$(KIND_CLUSTER) apply -f $(PROM_MANIFEST)
+	kubectl --context kind-$(KIND_CLUSTER) -n $(PROM_NS) rollout status deployment/prometheus-server --timeout=180s
+	@echo "Prometheus ready. kubetidy auto-detects it; scans now run at Tier 1."
+
 .PHONY: demo-scan
 demo-scan: build ## Run a scan against the demo namespace in the kind cluster
 	$(BIN_DIR)/kubetidy scan --context kind-$(KIND_CLUSTER) -n $(DEMO_NS)
+
+.PHONY: demo-scan-prom
+demo-scan-prom: build ## Tier-1 scan: scan the demo namespace using Prometheus
+	$(BIN_DIR)/kubetidy scan --context kind-$(KIND_CLUSTER) -n $(DEMO_NS) --prometheus-url $(PROM_URL)
 
 .PHONY: demo-diff
 demo-diff: build ## Show reversible kubectl patches for the demo namespace
@@ -140,6 +153,17 @@ e2e: ## One command: create kind cluster, install metrics-server, deploy demo, s
 	@echo "waiting ~30s for metrics-server to collect a first sample..."
 	@sleep 30
 	@$(MAKE) demo-scan
+	@$(MAKE) demo-diff
+
+.PHONY: e2e-prom
+e2e-prom: ## Full Tier-1 demo: kind + metrics + Prometheus + demo, then a Tier-1 scan
+	@$(MAKE) kind-up
+	@$(MAKE) kind-metrics
+	@$(MAKE) prometheus
+	@$(MAKE) demo-deploy
+	@echo "waiting ~60s for Prometheus to scrape a usable window..."
+	@sleep 60
+	@$(MAKE) demo-scan-prom
 	@$(MAKE) demo-diff
 
 .PHONY: kind-down
