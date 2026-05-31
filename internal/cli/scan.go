@@ -67,11 +67,16 @@ func runEngine(ctx context.Context, f *scanFlags) (model.ScanResult, error) {
 		ctx = context.Background()
 	}
 
+	sp := newSpinner("connecting to cluster…")
+	sp.start()
+	defer sp.finish()
+
 	clients, err := kube.Load(f.kubeContext, f.namespace)
 	if err != nil {
 		return model.ScanResult{}, fmt.Errorf("loading kube clients: %w", err)
 	}
 
+	sp.update("discovering workloads…")
 	workloads, err := kube.Discover(ctx, clients, f.namespace)
 	if err != nil {
 		return model.ScanResult{}, fmt.Errorf("discovering workloads: %w", err)
@@ -96,6 +101,9 @@ func runEngine(ctx context.Context, f *scanFlags) (model.ScanResult, error) {
 		Policy:    model.DefaultPolicy(),
 		Context:   clients.Context,
 		Namespace: f.namespace,
+	}
+	engine.Progress = func(done, total int) {
+		sp.update(fmt.Sprintf("analyzing workloads… %d/%d", done, total))
 	}
 	result, err := engine.Run(ctx)
 	if err != nil {

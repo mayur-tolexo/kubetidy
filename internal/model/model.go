@@ -115,6 +115,23 @@ type Policy struct {
 	// MemoryLimitEqualsRequest, when true (default), sets memory limit == request
 	// (Guaranteed QoS).
 	MemoryLimitEqualsRequest bool
+
+	// SnapshotHeadroom is the EXTRA fractional headroom applied on top of CPUHeadroom/
+	// MemoryHeadroom when usage comes from a single live snapshot (Tier 0, metrics-server).
+	// A snapshot captures current usage, never the peak, so downsizing from it is risky;
+	// this large buffer keeps Tier-0 recommendations safe and conservative.
+	SnapshotHeadroom float64
+
+	// MinCPURequestMillicores and MinMemoryRequestBytes are floors: the rightsizer never
+	// proposes a request below these, so an idle workload sampled at ~0 is not cut to an
+	// unschedulable/throttled sliver.
+	MinCPURequestMillicores int64
+	MinMemoryRequestBytes   int64
+
+	// DownsizeOnlyOnSnapshot, when true, means a snapshot-tier recommendation is only
+	// emitted when it REDUCES a request (we trust "you asked for way more than you use"
+	// from one sample, but not "you should grow" — that needs historical peaks).
+	DownsizeOnlyOnSnapshot bool
 }
 
 // DefaultPolicy returns kubetidy's opinionated defaults (see design spec §6).
@@ -124,6 +141,12 @@ func DefaultPolicy() Policy {
 		MemoryHeadroom:           0.15,
 		SetCPULimit:              false,
 		MemoryLimitEqualsRequest: true,
+		// Tier-0 safety: a single snapshot gets a big extra buffer, and floors keep
+		// idle-at-scan-time workloads from being cut to nothing.
+		SnapshotHeadroom:        1.0, // +100% on top of the base headroom for snapshots
+		MinCPURequestMillicores: 10,
+		MinMemoryRequestBytes:   32 * 1024 * 1024, // 32Mi
+		DownsizeOnlyOnSnapshot:  true,
 	}
 }
 
