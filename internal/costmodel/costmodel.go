@@ -1,3 +1,5 @@
+// Package costmodel converts a change in resource requests into a monthly dollar delta. It
+// is a PURE package: no I/O, fully deterministic, table-tested.
 package costmodel
 
 import "github.com/kubetidy/kubetidy/internal/model"

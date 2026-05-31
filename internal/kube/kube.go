@@ -1,3 +1,5 @@
+// Package kube handles client-go setup (kubeconfig/context resolution, like any kubectl
+// plugin) and workload discovery.
 package kube
 
 import (

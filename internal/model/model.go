@@ -39,6 +39,7 @@ func (t EvidenceTier) String() string {
 // WorkloadKind is the controller kind kubetidy analyzes.
 type WorkloadKind string
 
+// Workload kinds that kubetidy analyzes.
 const (
 	KindDeployment  WorkloadKind = "Deployment"
 	KindStatefulSet WorkloadKind = "StatefulSet"
