@@ -1,0 +1,37 @@
+version: 2
+
+project_name: kubetidy
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: kubetidy
+    main: ./cmd/kubetidy
+    binary: kubetidy
+    env:
+      - CGO_ENABLED=0
+      - GOFLAGS=-mod=mod
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      - -X github.com/kubetidy/kubetidy/internal/version.Version={{.Version}}
+      - -X github.com/kubetidy/kubetidy/internal/version.Commit={{.ShortCommit}}
+      - -X github.com/kubetidy/kubetidy/internal/version.Date={{.Date}}
+
+archives:
+  - id: default
+    # Ship both faces: the archive contains kubetidy and a kubectl-tidy copy so the
+    # kubectl plugin works on extract.
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+
+# krew plugin manifest is maintained under ./.krew.yaml and submitted to the krew-index.
+release:
+  draft: true
