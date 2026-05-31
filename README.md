@@ -77,6 +77,56 @@ kubectl tidy scan
 kubetidy inherits your current kubeconfig context and namespace, exactly like any other
 kubectl plugin.
 
+## Try it in 2 minutes (local kind cluster)
+
+No real cluster handy? Spin up a throwaway [kind](https://kind.sigs.k8s.io/) cluster with
+deliberately over-provisioned demo workloads and watch kubetidy flag the waste — one command:
+
+```sh
+make e2e
+```
+
+`make e2e` creates the cluster, installs metrics-server (Tier 0), deploys the demo workloads,
+waits for a first metrics sample, then runs `scan` and `diff`. Tear it down with:
+
+```sh
+make kind-down
+```
+
+Prefer step by step? Each stage is its own target:
+
+```sh
+make kind-up         # create the kind cluster
+make kind-metrics    # install metrics-server (--kubelet-insecure-tls for kind)
+make demo-deploy     # deploy over-provisioned demo workloads
+make demo-scan       # kubetidy scan against the demo namespace
+make demo-diff       # reversible kubectl patches for the demo namespace
+make kind-down       # delete the cluster
+```
+
+> Requires `kind` and `kubectl` on your PATH. The demo workloads use the `pause` image, so
+> they request multiple cores/GiB while using almost nothing — exactly the waste kubetidy is
+> built to surface.
+
+## Make commands
+
+Run `make help` to see everything. The common ones:
+
+| Target | What it does |
+|--------|--------------|
+| `make build` | Build the binary as both `kubetidy` and `kubectl-tidy` into `./bin` |
+| `make install` | Build and copy both faces to `/usr/local/bin` |
+| `make run` | Build then scan the current kube context |
+| `make test` | Run all unit tests |
+| `make test-race` | Run tests with the race detector |
+| `make cover` | Tests + total coverage; `make cover-html` for a browsable report |
+| `make fmt` / `make vet` | gofmt / go vet |
+| `make lint` | Run golangci-lint (installs it if missing) |
+| `make check` | Full pre-PR gate: tests + vet + gofmt + lint |
+| `make e2e` | Full local demo: kind up → metrics → deploy → scan → diff |
+| `make kind-up` / `make kind-down` | Create / delete the kind cluster |
+| `make clean` | Remove build and coverage output |
+
 ## Usage
 
 kubetidy ships as a single binary with two faces — use whichever you prefer:
@@ -138,15 +188,17 @@ All defaults are surfaced in `--explain` and overridable. The number is never a 
 ## Status
 
 🚧 **MVP under active development.** `scan` and `diff` work today. See the
-[roadmap](ROADMAP.md) and the [design spec](docs/superpowers/specs/2026-05-31-kubetidy-design.md)
-for what is next (GitOps PRs, OpenCost cost, multi-cluster, an operator).
+[roadmap](ROADMAP.md) for what is next (GitOps PRs, OpenCost cost, multi-cluster, an
+operator), and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the high-level design and
+flow diagrams.
 
 ## Contributing
 
 kubetidy is open stack, Kubernetes-native, and built for contribution. Start with
-[good first issues](https://github.com/mayur-tolexo/kubetidy/labels/good%20first%20issue) and
-read [CONTRIBUTING.md](CONTRIBUTING.md). The pure-logic packages (`rightsizer`, `costmodel`,
-`score`, `patch`) are the easiest, highest-value place to start.
+[good first issues](https://github.com/mayur-tolexo/kubetidy/labels/good%20first%20issue),
+read [CONTRIBUTING.md](CONTRIBUTING.md), and skim
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the package layout. The pure-logic packages
+(`rightsizer`, `costmodel`, `score`, `patch`) are the easiest, highest-value place to start.
 
 ## License
 
