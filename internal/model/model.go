@@ -1,0 +1,199 @@
+// Package model holds kubetidy's core domain types. It has no dependencies on other
+// kubetidy packages and no I/O, so every other package can import it freely.
+package model
+
+import "time"
+
+// EvidenceTier identifies which data source proved a finding. Higher tiers carry more
+// confidence. See the design spec's "three-tier data ladder".
+type EvidenceTier int
+
+const (
+	// TierStatic means no usage data was available; findings come from static analysis
+	// of the spec (e.g. missing requests/limits, absurd request:limit ratios).
+	TierStatic EvidenceTier = iota
+	// TierSnapshot (Tier 0) means a live usage snapshot from metrics-server.
+	TierSnapshot
+	// TierHistorical (Tier 1) means historical percentiles from Prometheus.
+	TierHistorical
+	// TierAllocated (Tier 2) means precise allocated cost from OpenCost.
+	TierAllocated
+)
+
+// String renders the tier for display.
+func (t EvidenceTier) String() string {
+	switch t {
+	case TierStatic:
+		return "static (no usage data)"
+	case TierSnapshot:
+		return "0 (metrics-server)"
+	case TierHistorical:
+		return "1 (Prometheus)"
+	case TierAllocated:
+		return "2 (OpenCost)"
+	default:
+		return "unknown"
+	}
+}
+
+// WorkloadKind is the controller kind kubetidy analyzes.
+type WorkloadKind string
+
+const (
+	KindDeployment  WorkloadKind = "Deployment"
+	KindStatefulSet WorkloadKind = "StatefulSet"
+	KindDaemonSet   WorkloadKind = "DaemonSet"
+)
+
+// Workload is a controller (Deployment/StatefulSet/DaemonSet) discovered in the cluster,
+// together with the per-container resource requests/limits from its pod template.
+type Workload struct {
+	Kind       WorkloadKind
+	Name       string
+	Namespace  string
+	Replicas   int32
+	Containers []Container
+	// Selector is the label selector that matches this workload's pods, used by usage
+	// providers to attribute pod metrics back to the workload.
+	Selector map[string]string
+	// NodeLabels (optional) captures scheduling hints (e.g. instance-type) for pricing.
+	NodeLabels map[string]string
+}
+
+// Ref returns a stable "kind/namespace/name" identifier.
+func (w Workload) Ref() string {
+	return string(w.Kind) + "/" + w.Namespace + "/" + w.Name
+}
+
+// Container is a single container in a workload's pod template, with its current
+// requests/limits.
+type Container struct {
+	Name     string
+	Requests ResourceAmounts
+	Limits   ResourceAmounts
+}
+
+// ResourceAmounts holds CPU and memory quantities in normalized units:
+// CPU in millicores (1000m = 1 core), memory in bytes. Zero means "unset".
+type ResourceAmounts struct {
+	CPUMillicores int64
+	MemoryBytes   int64
+}
+
+// IsZero reports whether both CPU and memory are unset.
+func (r ResourceAmounts) IsZero() bool { return r.CPUMillicores == 0 && r.MemoryBytes == 0 }
+
+// UsageStats holds observed usage for one container over an observation window.
+// For Tier 0 (snapshot) P50/P95/Max may all equal the single sampled value and Samples==1.
+type UsageStats struct {
+	CPUMillicores Percentiles
+	MemoryBytes   Percentiles
+	Window        time.Duration
+	Samples       int64
+	Tier          EvidenceTier
+}
+
+// Percentiles holds summary statistics for a single metric over the window.
+type Percentiles struct {
+	P50 float64
+	P95 float64
+	Max float64
+	// CV is the coefficient of variation (stddev/mean), used by the confidence model.
+	// Zero when unknown.
+	CV float64
+}
+
+// Policy controls how the rightsizer turns usage into recommended resources.
+type Policy struct {
+	// CPUHeadroom and MemoryHeadroom are fractional buffers added on top of the chosen
+	// percentile (e.g. 0.15 = +15%).
+	CPUHeadroom    float64
+	MemoryHeadroom float64
+	// SetCPULimit, when false (default), omits CPU limits to avoid throttling.
+	SetCPULimit bool
+	// MemoryLimitEqualsRequest, when true (default), sets memory limit == request
+	// (Guaranteed QoS).
+	MemoryLimitEqualsRequest bool
+}
+
+// DefaultPolicy returns kubetidy's opinionated defaults (see design spec §6).
+func DefaultPolicy() Policy {
+	return Policy{
+		CPUHeadroom:              0.15,
+		MemoryHeadroom:           0.15,
+		SetCPULimit:              false,
+		MemoryLimitEqualsRequest: true,
+	}
+}
+
+// ResourcePrice is the unit price attributable to a workload's scheduling target.
+type ResourcePrice struct {
+	CPUCoreMonth float64 // $ per CPU core per month
+	MemGiBMonth  float64 // $ per GiB of memory per month
+	Source       string  // human-readable provenance (e.g. "node pricing", "OpenCost")
+}
+
+// Confidence is a 0..1 score with a human-readable rationale. It is derived and
+// reproducible (see design spec §7), never cosmetic.
+type Confidence struct {
+	Score  float64 // 0..1
+	Reason string
+}
+
+// Percent returns the confidence as an integer percentage 0..100.
+func (c Confidence) Percent() int { return int(c.Score*100 + 0.5) }
+
+// Recommendation is the central, action-ready unit kubetidy produces. The MVP only reads,
+// but this carries enough to generate a patch later (target ref, container, current vs
+// proposed), so the future action layer is a new consumer, not a rewrite.
+type Recommendation struct {
+	Workload      Workload
+	ContainerName string
+
+	Current  ResourceSpec
+	Proposed ResourceSpec
+
+	// MonthlySavings is positive when the proposal saves money, negative when it costs
+	// more (e.g. under-provisioned workload that should grow).
+	MonthlySavings float64
+	Confidence     Confidence
+	Tier           EvidenceTier
+	// Evidence is a short human-readable justification (e.g. "P95 cpu 280m, max mem 0.9Gi
+	// over 14d · 1.2M samples").
+	Evidence string
+	// Explanation holds the full derivation shown under --explain.
+	Explanation []string
+}
+
+// ResourceSpec pairs requests and limits for a single container.
+type ResourceSpec struct {
+	Requests ResourceAmounts
+	Limits   ResourceAmounts
+}
+
+// ScanResult is the complete output of a scan.
+type ScanResult struct {
+	Context         string
+	Namespace       string // empty means all namespaces
+	Tier            EvidenceTier
+	GeneratedAt     time.Time
+	WorkloadCount   int
+	Recommendations []Recommendation
+
+	// EfficiencyScore is 0..100 (higher is better), computed by the score package.
+	EfficiencyScore int
+	ScoreBreakdown  []ScoreFactor
+	// TotalMonthlyWaste is the sum of positive MonthlySavings across recommendations.
+	TotalMonthlyWaste float64
+
+	// Warnings collects non-fatal degradations (e.g. "Prometheus unreachable, used
+	// metrics-server").
+	Warnings []string
+}
+
+// ScoreFactor is one explainable component of the efficiency score.
+type ScoreFactor struct {
+	Name        string
+	Value       float64 // 0..1 contribution
+	Description string
+}
