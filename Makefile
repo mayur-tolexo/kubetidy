@@ -133,6 +133,19 @@ prometheus: ## Deploy a minimal Prometheus into the cluster (unlocks Tier 1)
 	kubectl --context kind-$(KIND_CLUSTER) -n $(PROM_NS) rollout status deployment/prometheus-server --timeout=180s
 	@echo "Prometheus ready. kubetidy auto-detects it; scans now run at Tier 1."
 
+.PHONY: crd-install
+crd-install: ## Install just the UsageProfile CRD into the kind cluster
+	kubectl --context kind-$(KIND_CLUSTER) apply -f config/crd/usageprofiles.yaml
+
+.PHONY: operator-deploy
+operator-deploy: ## Build, load, and deploy the kubetidy operator into the kind cluster (Tier 0)
+	docker build -t kubetidy/operator:dev -f hack/operator/Dockerfile .
+	kind load docker-image kubetidy/operator:dev --name $(KIND_CLUSTER)
+	kubectl --context kind-$(KIND_CLUSTER) apply -f config/crd/usageprofiles.yaml
+	kubectl --context kind-$(KIND_CLUSTER) apply -f config/operator/operator.yaml
+	kubectl --context kind-$(KIND_CLUSTER) -n kubetidy-system rollout status deployment/kubetidy-operator --timeout=120s
+	@echo "Operator running. Give it a few minutes to accumulate history; scans then run at Tier 0 (operator) with no Prometheus."
+
 .PHONY: demo-scan
 demo-scan: build ## Run a scan against the demo namespace in the kind cluster
 	$(BIN_DIR)/kubetidy scan --context kind-$(KIND_CLUSTER) -n $(DEMO_NS)

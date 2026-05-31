@@ -93,9 +93,12 @@ func Install(ctx context.Context, dyn dynamic.Interface, disco discovery.Discove
 	return nil
 }
 
-// CRDManifest and OperatorManifest expose the embedded YAML for callers that want to print it
-// (e.g. an init --dry-run) instead of applying it.
-func CRDManifest() []byte      { return crdManifest }
+// CRDManifest returns the embedded UsageProfile CRD YAML, for callers that want to print it
+// (e.g. `init --print`) instead of applying it.
+func CRDManifest() []byte { return crdManifest }
+
+// OperatorManifest returns the embedded operator (namespace, RBAC, Deployment) YAML, for
+// callers that want to print it instead of applying it.
 func OperatorManifest() []byte { return operatorManifest }
 
 // applyManifest decodes a (possibly multi-document) YAML manifest and server-side-applies each
