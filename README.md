@@ -37,8 +37,10 @@ and **acting on** the recommendations. kubetidy is built around trust:
 ## The three-tier data ladder
 
 kubetidy auto-detects the best data source available and stamps every finding with the tier
-that proved it. It never fails hard — if Prometheus is missing it falls back to
-metrics-server; if that is missing it falls back to static analysis.
+that proved it — including **auto-detecting an in-cluster Prometheus** (common
+kube-prometheus / Helm service names) so scans upgrade to Tier 1 with zero configuration. It
+never fails hard — if Prometheus is missing it falls back to metrics-server; if that is
+missing it falls back to static analysis.
 
 | Tier | Needs | You get | Confidence |
 |------|-------|---------|------------|
@@ -101,6 +103,40 @@ make kind-down       # delete the cluster
 > they request multiple cores/GiB while using almost nothing — exactly the waste kubetidy is
 > built to surface.
 
+## High-confidence scans with Prometheus (Tier 1)
+
+A `metrics-server` snapshot (Tier 0) only sees *current* usage, so kubetidy is deliberately
+conservative with it. For trustworthy, peak-aware recommendations you want **Tier 1**, which
+reads historical percentiles from Prometheus.
+
+Don't have Prometheus yet? Deploy a minimal one and re-scan — two commands:
+
+```sh
+make prometheus       # deploy a tiny Prometheus into the cluster (namespace: monitoring)
+make demo-scan-prom   # scan the demo namespace at Tier 1
+```
+
+`make prometheus` applies [`hack/kind/prometheus.yaml`](hack/kind/prometheus.yaml) — a
+single-replica Prometheus that scrapes the kubelet/cAdvisor. kubetidy **auto-detects** it (no
+flags needed) and upgrades the scan to Tier 1; you'll see `data: 1 (Prometheus)` in the
+banner instead of `0 (metrics-server)`.
+
+Or do the whole thing — cluster, metrics-server, Prometheus, demo, and a Tier-1 scan — in one
+command:
+
+```sh
+make e2e-prom
+```
+
+On a real cluster, point kubetidy at your existing Prometheus explicitly:
+
+```sh
+kubectl tidy scan --prometheus-url http://prometheus.monitoring.svc:9090
+```
+
+…or just run `kubectl tidy scan` — kubetidy probes the common in-cluster Prometheus service
+names automatically.
+
 ## Make commands
 
 Run `make help` to see everything. The common ones:
@@ -117,6 +153,9 @@ Run `make help` to see everything. The common ones:
 | `make lint` | Run golangci-lint (installs it if missing) |
 | `make check` | Full pre-PR gate: tests + vet + gofmt + lint |
 | `make e2e` | Full local demo: kind up → metrics → deploy → scan → diff |
+| `make prometheus` | Deploy a minimal Prometheus (unlocks Tier 1) |
+| `make demo-scan-prom` | Tier-1 scan of the demo namespace via Prometheus |
+| `make e2e-prom` | Full Tier-1 demo: kind → metrics → Prometheus → deploy → scan |
 | `make kind-up` / `make kind-down` | Create / delete the kind cluster |
 | `make clean` | Remove build and coverage output |
 
@@ -126,6 +165,9 @@ kubetidy ships as a single binary with two faces — use whichever you prefer:
 
 - `kubectl tidy <command>` (kubectl plugin form)
 - `kubetidy <command>` (standalone)
+
+Commands: **`scan`** (report), **`diff`** (reversible `kubectl patch` per recommendation),
+**`pr`** (a full GitOps change set — patch files + a Markdown PR body), and `version`.
 
 ### `scan` — score, dollars, and recommendations
 
@@ -157,6 +199,20 @@ Example output:
 kubectl patch deployment checkout-api -n shop --type=strategic -p '{"spec":{"template":{"spec":{"containers":[{"name":"checkout-api","resources":{"requests":{"cpu":"320m","memory":"1126Mi"}}}}]}}}}'
 ```
 
+### `pr` — a reviewable GitOps change set
+
+`pr` turns the scan into something you can merge: one strategic-merge patch file per
+recommendation, plus a Markdown PR body that leads with the monthly savings, a per-workload
+table with evidence, and apply/revert instructions. kubetidy never commits, pushes, or
+applies — you review the files and open the PR yourself (Argo CD / Flux or `kubectl` apply it).
+
+```sh
+kubectl tidy pr                      # write ./kubetidy-patches/ + print the PR body
+kubectl tidy pr --out ./patches      # choose the output directory
+kubectl tidy pr --body-out PR.md     # write the PR body to a file
+kubectl tidy pr --include-grow       # also include under-provisioned ("grow") workloads
+```
+
 ### Common flags
 
 | Flag | Applies to | Description |
@@ -180,10 +236,10 @@ All defaults are surfaced in `--explain` and overridable. The number is never a 
 
 ## Status
 
-🚧 **MVP under active development.** `scan` and `diff` work today. See the
-[roadmap](ROADMAP.md) for what is next (GitOps PRs, OpenCost cost, multi-cluster, an
-operator), and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the high-level design and
-flow diagrams.
+🚧 **Active development.** `scan`, `diff`, and `pr` work today, with Prometheus
+auto-detection. See the [roadmap](ROADMAP.md) for what is next (CI cost-guardrail, guarded
+apply, OpenCost cost, multi-cluster, an operator), and
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the high-level design and flow diagrams.
 
 ## Contributing
 

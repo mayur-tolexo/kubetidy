@@ -6,8 +6,9 @@ see [ROADMAP.md](../ROADMAP.md).
 
 ## Design goals
 
-1. **Read-only and reversible by default.** kubetidy never mutates the cluster. Even `diff`
-   only *prints* the `kubectl patch` you would run.
+1. **Read-only and reversible by default.** kubetidy never mutates the cluster. `diff` only
+   *prints* the `kubectl patch` you would run, and `pr` only *writes files* for you to review
+   and merge — kubetidy never commits, pushes, or applies.
 2. **Never fail hard.** A missing data source degrades the result; it does not abort the scan.
 3. **Every number shows its work.** Confidence and evidence are derived and reproducible.
 4. **Action-ready core.** The `Recommendation` type carries the patch that *would* be applied,
@@ -25,6 +26,7 @@ flowchart TB
         root["root cmd<br/>(adapts name from os.Args[0])"]
         scancmd["scan command"]
         diffcmd["diff command"]
+        prcmd["pr command"]
         enginewire["runEngine (shared wiring)"]
     end
 
@@ -43,6 +45,7 @@ flowchart TB
         costmodel["internal/costmodel<br/>MonthlySavings"]
         score["internal/score<br/>Efficiency Score"]
         patch["internal/patch<br/>StrategicMergePatch"]
+        gitops["internal/gitops<br/>Build (patches + PR body)"]
     end
 
     subgraph Out["Rendering — internal/report"]
@@ -53,13 +56,14 @@ flowchart TB
 
     cluster[("Kubernetes API<br/>metrics-server<br/>Prometheus")]
 
-    user --> root --> scancmd & diffcmd --> enginewire --> engine
+    user --> root --> scancmd & diffcmd & prcmd --> enginewire --> engine
     engine --> kube --> cluster
     engine --> usage --> cluster
     engine --> pricing
     engine --> rightsizer & costmodel & score
     scancmd --> report
     diffcmd --> patch
+    prcmd --> gitops --> patch
     Core -.uses.-> model
     IO -.uses.-> model
     Pure -.uses.-> model
@@ -76,9 +80,11 @@ that proved it.
 
 ```mermaid
 flowchart LR
-    start([scan starts]) --> q1{Prometheus URL<br/>given / reachable?}
-    q1 -- yes --> t1["Tier 1: Prometheus<br/>P50/P95/max over window<br/>HIGH confidence"]
-    q1 -- no --> q2{metrics-server<br/>available?}
+    start([scan starts]) --> q0{--prometheus-url<br/>given?}
+    q0 -- yes --> t1["Tier 1: Prometheus<br/>P50/P95/max over window<br/>HIGH confidence"]
+    q0 -- no --> qa{auto-detect<br/>in-cluster Prometheus?}
+    qa -- found --> t1
+    qa -- none --> q2{metrics-server<br/>available?}
     q2 -- yes --> t0["Tier 0: metrics-server<br/>live snapshot<br/>LOW–MED confidence"]
     q2 -- no --> ts["Static: spec-only checks<br/>(missing/absurd requests)<br/>LOWEST confidence"]
     t1 --> rec([recommendations])
@@ -141,10 +147,14 @@ sequenceDiagram
 | `internal/costmodel` | pure | resource delta + price → $/month |
 | `internal/score` | pure | scan result → 0–100 efficiency score + breakdown |
 | `internal/patch` | pure | recommendation → strategic-merge patch + `kubectl patch` command |
+| `internal/gitops` | pure | scan result → GitOps change set (patch files + Markdown PR body) |
 | `internal/scan` | orchestrator | wires providers + pure packages into a `ScanResult` |
 | `internal/report` | output | Table / JSON / `--explain` rendering |
-| `internal/cli` | entrypoint | cobra commands; shared `runEngine` |
+| `internal/cli` | entrypoint | cobra commands (`scan`/`diff`/`pr`); shared `runEngine` with an injectable client-loader seam |
 | `internal/version` | meta | build/version metadata (ldflags) |
+
+`internal/usage` also contains `DetectPrometheus`, which probes well-known in-cluster
+Prometheus service names so a scan auto-upgrades from Tier 0 to Tier 1 with no configuration.
 
 ## Extending kubetidy
 
