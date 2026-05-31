@@ -3,8 +3,16 @@
 package rightsizer
 
 import (
+	"fmt"
+	"math"
+	"time"
+
 	"github.com/kubetidy/kubetidy/internal/model"
 )
+
+// mib is one mebibyte in bytes; memory recommendations are rounded up to a whole MiB for
+// cleaner, more human-readable values (e.g. 1.1Gi rather than 1181234567 bytes).
+const mib = 1024 * 1024
 
 // Recommend computes the proposed ResourceSpec for a container given its current spec, its
 // observed usage, and the policy. It is the heart of kubetidy and must be deterministic.
@@ -14,19 +22,155 @@ import (
 //   - Memory request = Max * (1 + MemoryHeadroom); memory limit = request when
 //     policy.MemoryLimitEqualsRequest, else carried over from current.
 //
-// IMPLEMENTED BY AGENT: see internal/rightsizer task.
+// When usage has no data for a metric (P95/Max == 0) the current request/limit for that
+// metric is preserved (we never recommend zero from missing data). Memory is rounded up to
+// the nearest whole MiB; CPU is rounded to whole millicores. No value can go negative.
 func Recommend(current model.ResourceSpec, usage model.UsageStats, policy model.Policy) model.ResourceSpec {
-	_ = current
-	_ = usage
-	_ = policy
-	return model.ResourceSpec{}
+	out := model.ResourceSpec{}
+
+	// --- CPU ---
+	if usage.CPUMillicores.P95 > 0 {
+		cpu := roundNonNegative(usage.CPUMillicores.P95 * (1 + policy.CPUHeadroom))
+		out.Requests.CPUMillicores = cpu
+		if policy.SetCPULimit {
+			out.Limits.CPUMillicores = cpu
+		}
+		// else: leave CPU limit unset (0) to avoid throttling.
+	} else {
+		// No usage data: keep current CPU request/limit untouched.
+		out.Requests.CPUMillicores = current.Requests.CPUMillicores
+		out.Limits.CPUMillicores = current.Limits.CPUMillicores
+	}
+
+	// --- Memory ---
+	if usage.MemoryBytes.Max > 0 {
+		mem := roundUpMiB(roundNonNegative(usage.MemoryBytes.Max * (1 + policy.MemoryHeadroom)))
+		out.Requests.MemoryBytes = mem
+		if policy.MemoryLimitEqualsRequest {
+			out.Limits.MemoryBytes = mem
+		} else {
+			out.Limits.MemoryBytes = current.Limits.MemoryBytes
+		}
+	} else {
+		// No usage data: keep current memory request/limit untouched.
+		out.Requests.MemoryBytes = current.Requests.MemoryBytes
+		out.Limits.MemoryBytes = current.Limits.MemoryBytes
+	}
+
+	return out
+}
+
+// roundNonNegative rounds to the nearest whole unit, clamping NaN/Inf and negatives to 0.
+func roundNonNegative(v float64) int64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 {
+		return 0
+	}
+	return int64(math.Round(v))
+}
+
+// roundUpMiB rounds a byte count up to the nearest whole mebibyte.
+func roundUpMiB(bytes int64) int64 {
+	if bytes <= 0 {
+		return 0
+	}
+	mibs := (bytes + mib - 1) / mib
+	return mibs * mib
 }
 
 // Confidence derives a reproducible confidence score from the usage statistics (tier,
 // window, sample count, variance). See design spec §7.
 //
-// IMPLEMENTED BY AGENT.
+// The score starts from a per-tier base, gains a bonus for long windows (>= 14d) and large
+// sample counts, and loses a penalty proportional to the metrics' coefficient of variation.
+// TierSnapshot is capped at 0.6 (a single live snapshot is never high-confidence). The final
+// score is clamped to [0.05, 0.99].
 func Confidence(usage model.UsageStats) model.Confidence {
-	_ = usage
-	return model.Confidence{}
+	base := tierBase(usage.Tier)
+
+	// Window bonus: up to +0.05, scaling toward a 14-day reference window.
+	windowDays := usage.Window.Hours() / 24
+	windowBonus := 0.05 * clamp01(windowDays/14)
+
+	// Sample bonus: up to +0.05, scaling logarithmically toward ~10k samples.
+	sampleBonus := 0.0
+	if usage.Samples > 1 {
+		sampleBonus = 0.05 * clamp01(math.Log10(float64(usage.Samples))/4) // 10^4 = 10k
+	}
+
+	// Variance penalty: driven by the worst-behaved (highest CV) of CPU and memory.
+	// A CV of 1.0 (stddev == mean) costs the full 0.3.
+	worstCV := math.Max(usage.CPUMillicores.CV, usage.MemoryBytes.CV)
+	if worstCV < 0 {
+		worstCV = 0
+	}
+	variancePenalty := 0.3 * clamp01(worstCV)
+
+	score := base + windowBonus + sampleBonus - variancePenalty
+
+	// A single snapshot can never be high-confidence.
+	if usage.Tier == model.TierSnapshot && score > 0.6 {
+		score = 0.6
+	}
+
+	score = clamp(score, 0.05, 0.99)
+
+	reason := buildReason(usage, worstCV)
+	return model.Confidence{Score: score, Reason: reason}
 }
+
+// tierBase returns the starting confidence for a tier.
+func tierBase(t model.EvidenceTier) float64 {
+	switch t {
+	case model.TierHistorical:
+		return 0.9
+	case model.TierAllocated:
+		return 0.9
+	case model.TierSnapshot:
+		return 0.5
+	case model.TierStatic:
+		return 0.25
+	default:
+		return 0.25
+	}
+}
+
+// buildReason produces a short human-readable explanation of the confidence drivers.
+func buildReason(usage model.UsageStats, worstCV float64) string {
+	var variance string
+	switch {
+	case worstCV == 0:
+		variance = "no variance data"
+	case worstCV < 0.25:
+		variance = "low variance"
+	case worstCV < 0.75:
+		variance = "moderate variance"
+	default:
+		variance = "high variance"
+	}
+	return fmt.Sprintf("tier %s; window %s; %d samples; %s (CV %.2f)",
+		usage.Tier, formatWindow(usage.Window), usage.Samples, variance, worstCV)
+}
+
+// formatWindow renders a duration as a compact human window (e.g. "14d", "6h", "0").
+func formatWindow(d time.Duration) string {
+	if d <= 0 {
+		return "0"
+	}
+	days := d.Hours() / 24
+	if days >= 1 {
+		return fmt.Sprintf("%dd", int64(math.Round(days)))
+	}
+	return fmt.Sprintf("%dh", int64(math.Round(d.Hours())))
+}
+
+func clamp(v, lo, hi float64) float64 {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+func clamp01(v float64) float64 { return clamp(v, 0, 1) }
