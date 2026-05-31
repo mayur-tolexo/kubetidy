@@ -53,9 +53,18 @@ type Options struct {
 	// to the CRD. When false, only the CRD is installed (useful for GitOps setups that manage
 	// the Deployment separately).
 	IncludeOperator bool
+	// Image, when non-empty, overrides the operator container image in the embedded manifest.
+	// The embedded default (defaultOperatorImage) is a local-only dev tag that is not pullable
+	// on a real cluster, so a real install must set this to a published image.
+	Image string
 	// Log receives one-line progress messages. nil discards them.
 	Log func(string)
 }
+
+// defaultOperatorImage is the image hard-coded in the embedded operator manifest. It is a
+// local/kind-only tag (loaded via `kind load`), NOT a pullable registry image — a real
+// cluster install must override it with Options.Image.
+const defaultOperatorImage = "kubetidy/operator:dev"
 
 func (o Options) log(msg string) {
 	if o.Log != nil {
@@ -86,7 +95,11 @@ func Install(ctx context.Context, dyn dynamic.Interface, disco discovery.Discove
 	}
 
 	opts.log("applying operator (namespace, RBAC, deployment)")
-	if err := applyManifest(ctx, dyn, mapper, operatorManifest); err != nil {
+	manifest := operatorManifest
+	if opts.Image != "" {
+		manifest = []byte(strings.ReplaceAll(string(operatorManifest), defaultOperatorImage, opts.Image))
+	}
+	if err := applyManifest(ctx, dyn, mapper, manifest); err != nil {
 		return err
 	}
 	opts.log("install complete")

@@ -18,6 +18,7 @@ type initFlags struct {
 	kubeContext string
 	crdOnly     bool
 	printOnly   bool
+	image       string
 }
 
 // discoveryFor is a seam so tests can substitute the discovery client. In production it builds
@@ -58,6 +59,7 @@ func newInitCommand() *cobra.Command {
 	flags.StringVar(&f.kubeContext, "context", "", "kubeconfig context to use")
 	flags.BoolVar(&f.crdOnly, "crd-only", false, "install only the UsageProfile CRD, not the operator")
 	flags.BoolVar(&f.printOnly, "print", false, "print the manifests that would be applied, and exit")
+	flags.StringVar(&f.image, "image", "", "operator container image to deploy (required on a real cluster; the embedded default is a local kind-only tag)")
 	return cmd
 }
 
@@ -87,8 +89,19 @@ func runInit(ctx context.Context, f *initFlags) error {
 		return fmt.Errorf("init: building discovery client: %w", err)
 	}
 
+	// Warn loudly when installing the operator without a real image: the embedded default is
+	// a kind-only tag that will ImagePullBackOff on a real cluster, leaving scans on the
+	// limited snapshot tier.
+	if !f.crdOnly && f.image == "" {
+		_, _ = fmt.Fprintln(os.Stdout,
+			"⚠  No --image given: deploying the operator with the local-only dev image, which will\n"+
+				"   not pull on a real cluster. Pass --image <registry>/kubetidy-operator:<tag>, or use\n"+
+				"   `make operator-deploy` for a local kind cluster.")
+	}
+
 	opts := installer.Options{
 		IncludeOperator: !f.crdOnly,
+		Image:           f.image,
 		Log:             func(msg string) { _, _ = fmt.Fprintln(os.Stdout, "•", msg) },
 	}
 	if err := installer.Install(ctx, dyn, disco, opts); err != nil {
