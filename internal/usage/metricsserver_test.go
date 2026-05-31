@@ -195,7 +195,7 @@ func TestMetricsServerProviderUsage(t *testing.T) {
 // TestMetricsServerProviderListError verifies a hard List failure is propagated.
 func TestMetricsServerProviderListError(t *testing.T) {
 	client := metricsfake.NewSimpleClientset()
-	client.PrependReactor("list", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+	client.PrependReactor("list", "pods", func(_ k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, context.DeadlineExceeded
 	})
 	p := NewMetricsServerProvider(client)

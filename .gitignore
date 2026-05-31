@@ -27,6 +27,13 @@ go.work.sum
 # env file
 .env
 
+# Build output
+/bin/
+/dist/
+
+# Local working docs that should never be committed
+docs/superpowers/
+
 # Editor/IDE
 # .idea/
 # .vscode/

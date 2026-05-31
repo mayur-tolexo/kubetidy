@@ -32,7 +32,7 @@ func newScanCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "scan",
 		Short: "Scan the cluster and report efficiency, waste, and rightsizing recommendations",
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runScan(cmd.Context(), f)
 		},
 	}

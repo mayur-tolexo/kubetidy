@@ -23,7 +23,7 @@ func newDiffCommand() *cobra.Command {
 		Long: "diff scans the cluster (read-only) and, for each rightsizing recommendation, prints the " +
 			"exact strategic-merge `kubectl patch` command that would apply it, along with the monthly " +
 			"savings. kubetidy never runs these — you review, run, or discard them.",
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runDiff(cmd.Context(), f)
 		},
 	}
@@ -56,6 +56,7 @@ func renderDiff(w io.Writer, result model.ScanResult, explain string, topN int) 
 		return recs[i].MonthlySavings > recs[j].MonthlySavings
 	})
 
+	var b strings.Builder
 	count := 0
 	for _, rec := range recs {
 		if explain != "" && !matchesWorkload(rec, explain) {
@@ -65,19 +66,20 @@ func renderDiff(w io.Writer, result model.ScanResult, explain string, topN int) 
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(w, "# %s (%s) · saves %s/mo · conf %d%%\n",
+		fmt.Fprintf(&b, "# %s (%s) · saves %s/mo · conf %d%%\n",
 			rec.Workload.Name, rec.Workload.Ref(), signedDollars(rec.MonthlySavings), rec.Confidence.Percent())
-		fmt.Fprintln(w, cmd)
-		fmt.Fprintln(w)
+		b.WriteString(cmd)
+		b.WriteString("\n\n")
 		count++
 		if topN > 0 && count >= topN {
 			break
 		}
 	}
 	if count == 0 {
-		fmt.Fprintln(w, "No rightsizing recommendations.")
+		b.WriteString("No rightsizing recommendations.\n")
 	}
-	return nil
+	_, err := io.WriteString(w, b.String())
+	return err
 }
 
 // matchesWorkload reports whether the query matches the recommendation's container name or

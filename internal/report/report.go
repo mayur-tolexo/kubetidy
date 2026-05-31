@@ -67,7 +67,7 @@ func Table(w io.Writer, result model.ScanResult, opts Options) error {
 		// Use a tabwriter so the recommendation columns align.
 		tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
 		for _, rec := range recs {
-			fmt.Fprintf(tw, "  %s\tcpu %dm→%dm\tmem %s→%s\t-%s/mo\tconf %d%%\n",
+			_, _ = fmt.Fprintf(tw, "  %s\tcpu %dm→%dm\tmem %s→%s\t-%s/mo\tconf %d%%\n",
 				workloadLabel(rec),
 				rec.Current.Requests.CPUMillicores,
 				rec.Proposed.Requests.CPUMillicores,
@@ -77,7 +77,8 @@ func Table(w io.Writer, result model.ScanResult, opts Options) error {
 				rec.Confidence.Percent(),
 			)
 			// evidence on its own (non-tabbed) line, flushed after the row.
-			tw.Flush()
+			// Flushing to an in-memory strings.Builder cannot fail.
+			_ = tw.Flush()
 			if rec.Evidence != "" {
 				fmt.Fprintf(&b, "    evidence: %s\n", rec.Evidence)
 			}
