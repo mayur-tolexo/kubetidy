@@ -41,11 +41,16 @@ This roadmap is intentionally public and open for discussion — please weigh in
 
 > Where the value and the $1B valuations actually are.
 
+- [x] **kubetidy operator** — read-only in-cluster usage historian; records decaying
+      histograms into `UsageProfile` CRDs so scans get Prometheus-grade recommendations with
+      no Prometheus (the real Tier 0). The first, safe increment of the operator. See
+      [docs/design/operator.md](docs/design/operator.md).
+- [x] **`kubectl tidy init`** — install the CRD + operator from manifests embedded in the
+      binary; no manual `kubectl apply`.
 - [ ] Guarded `apply` with auto-rollback on SLO regression
 - [ ] Tier 2: OpenCost integration for precise allocated cost
 - [ ] Accountability: per-team showback + budgets
-- [ ] Kubernetes Operator + Recommendation CRDs (continuous, in-cluster)
-- [ ] Multi-cluster aggregation
+- [ ] Recommendation CRDs + multi-cluster aggregation (continuous, in-cluster)
 - [ ] Cleanup detectors (orphaned services/PVCs, idle namespaces, zombie workloads)
 
 ## 💼 Commercial (open-core)
