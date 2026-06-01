@@ -65,8 +65,8 @@ spec:
       serviceAccountName: kubetidy-operator
       containers:
         - name: operator
-          image: kubetidy/operator:dev
-          imagePullPolicy: IfNotPresent
+          image: docker.io/mayurdas1991/kubetidy-operator:latest
+          imagePullPolicy: Always
           args: ["--scrape-interval=30s"]
           resources:
             requests:

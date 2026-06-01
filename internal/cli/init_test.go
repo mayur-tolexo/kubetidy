@@ -6,7 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
+	dynfake "k8s.io/client-go/dynamic/fake"
 )
 
 var errTest = errors.New("injected test error")
@@ -16,7 +19,7 @@ func TestInitCommandFlags(t *testing.T) {
 	if cmd.Use != "init" {
 		t.Errorf("Use = %q, want init", cmd.Use)
 	}
-	for _, name := range []string{"context", "crd-only", "print"} {
+	for _, name := range []string{"context", "crd-only", "print", "image"} {
 		if cmd.Flags().Lookup(name) == nil {
 			t.Errorf("init command missing --%s flag", name)
 		}
@@ -62,5 +65,21 @@ func TestRunInitDynamicClientError(t *testing.T) {
 	err := runInit(context.Background(), &initFlags{})
 	if err == nil || !strings.Contains(err.Error(), "building dynamic client") {
 		t.Fatalf("err = %v, want a building dynamic client error", err)
+	}
+}
+
+func TestRunInitDiscoveryClientError(t *testing.T) {
+	origDyn := dynamicFor
+	origDisco := discoveryFor
+	defer func() { dynamicFor = origDyn; discoveryFor = origDisco }()
+
+	dynamicFor = func(string) (dynamic.Interface, error) {
+		return dynfake.NewSimpleDynamicClient(runtime.NewScheme()), nil
+	}
+	discoveryFor = func(string) (discovery.DiscoveryInterface, error) { return nil, errTest }
+
+	err := runInit(context.Background(), &initFlags{})
+	if err == nil || !strings.Contains(err.Error(), "building discovery client") {
+		t.Fatalf("err = %v, want a building discovery client error", err)
 	}
 }
