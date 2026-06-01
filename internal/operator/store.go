@@ -63,10 +63,22 @@ func (s *dynamicStore) Get(ctx context.Context, namespace, name string) (usagepr
 func (s *dynamicStore) Save(ctx context.Context, profile usageprofile.UsageProfile) error {
 	res := s.client.Resource(usageprofile.GroupVersionResource()).Namespace(profile.Namespace)
 
+	// UsageProfile has a status subresource, so spec and status are written through different
+	// endpoints: a plain Create/Update persists only spec+metadata and SILENTLY DROPS status.
+	// All of the recorded history (sample count, per-container percentiles, encoded histograms)
+	// lives in status, so each write must be followed by an UpdateStatus or the operator
+	// persists empty profiles.
+	desired := profile.ToUnstructured()
+
 	existing, err := res.Get(ctx, profile.Name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		if _, err := res.Create(ctx, profile.ToUnstructured(), metav1.CreateOptions{}); err != nil {
-			return fmt.Errorf("operator: create usageprofile %s/%s: %w", profile.Namespace, profile.Name, err)
+		created, cerr := res.Create(ctx, desired, metav1.CreateOptions{})
+		if cerr != nil {
+			return fmt.Errorf("operator: create usageprofile %s/%s: %w", profile.Namespace, profile.Name, cerr)
+		}
+		created.Object["status"] = desired.Object["status"]
+		if _, serr := res.UpdateStatus(ctx, created, metav1.UpdateOptions{}); serr != nil {
+			return fmt.Errorf("operator: set usageprofile status %s/%s: %w", profile.Namespace, profile.Name, serr)
 		}
 		return nil
 	}
@@ -74,11 +86,15 @@ func (s *dynamicStore) Save(ctx context.Context, profile usageprofile.UsageProfi
 		return fmt.Errorf("operator: get-before-update usageprofile %s/%s: %w", profile.Namespace, profile.Name, err)
 	}
 
-	// Carry the resourceVersion forward so the update is accepted.
-	updated := profile.ToUnstructured()
-	updated.SetResourceVersion(existing.GetResourceVersion())
-	if _, err := res.Update(ctx, updated, metav1.UpdateOptions{}); err != nil {
-		return fmt.Errorf("operator: update usageprofile %s/%s: %w", profile.Namespace, profile.Name, err)
+	// Carry the resourceVersion forward so the spec update is accepted, then write status.
+	desired.SetResourceVersion(existing.GetResourceVersion())
+	updated, uerr := res.Update(ctx, desired, metav1.UpdateOptions{})
+	if uerr != nil {
+		return fmt.Errorf("operator: update usageprofile %s/%s: %w", profile.Namespace, profile.Name, uerr)
+	}
+	updated.Object["status"] = desired.Object["status"]
+	if _, serr := res.UpdateStatus(ctx, updated, metav1.UpdateOptions{}); serr != nil {
+		return fmt.Errorf("operator: update usageprofile status %s/%s: %w", profile.Namespace, profile.Name, serr)
 	}
 	return nil
 }
