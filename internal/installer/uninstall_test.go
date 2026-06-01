@@ -2,6 +2,7 @@ package installer
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -74,7 +75,7 @@ func TestDeleteObjectToleratesNotFound(t *testing.T) {
 	}
 
 	// Deleting from an empty cluster must succeed (idempotent: not-found is OK).
-	if err := deleteManifest(context.Background(), dyn, mapper, OperatorManifest()); err != nil {
+	if err := deleteManifest(context.Background(), dyn, mapper, OperatorManifest(), UninstallOptions{}); err != nil {
 		t.Fatalf("deleteManifest on empty cluster should be a no-op, got: %v", err)
 	}
 }
@@ -93,7 +94,7 @@ func TestDeleteObjectRemovesExisting(t *testing.T) {
 	if _, err := dyn.Resource(gvr).Get(context.Background(), "usageprofiles.kubetidy.io", metav1.GetOptions{}); err != nil {
 		t.Fatalf("seed CRD not retrievable: %v", err)
 	}
-	if err := deleteObject(context.Background(), dyn, mapper, crd); err != nil {
+	if err := deleteObject(context.Background(), dyn, mapper, crd, UninstallOptions{}); err != nil {
 		t.Fatalf("deleteObject: %v", err)
 	}
 	if _, err := dyn.Resource(gvr).Get(context.Background(), "usageprofiles.kubetidy.io", metav1.GetOptions{}); err == nil {
@@ -106,7 +107,10 @@ func TestUninstallKeepCRDs(t *testing.T) {
 	var logs []string
 	// keepCRDs=true deletes only the operator; an empty cluster makes every delete a no-op,
 	// so this exercises the operator-only path without error.
-	if err := Uninstall(context.Background(), dyn, fakeDiscovery(), true, func(m string) { logs = append(logs, m) }); err != nil {
+	if err := Uninstall(context.Background(), dyn, fakeDiscovery(), UninstallOptions{
+		KeepCRDs: true,
+		Log:      func(m string) { logs = append(logs, m) },
+	}); err != nil {
 		t.Fatalf("Uninstall(keepCRDs) error: %v", err)
 	}
 	if len(logs) == 0 {
@@ -116,14 +120,35 @@ func TestUninstallKeepCRDs(t *testing.T) {
 
 func TestUninstallFull(t *testing.T) {
 	dyn := uninstallFakeDynamic()
-	if err := Uninstall(context.Background(), dyn, fakeDiscovery(), false, nil); err != nil {
+	if err := Uninstall(context.Background(), dyn, fakeDiscovery(), UninstallOptions{}); err != nil {
 		t.Fatalf("Uninstall(full) error: %v", err)
+	}
+}
+
+func TestUninstallDryRun(t *testing.T) {
+	// Seed a CRD; dry-run must report it as present but NOT delete it.
+	crd := crdObject("usageprofiles.kubetidy.io", true)
+	dyn := uninstallFakeDynamic(crd)
+	var logs []string
+	if err := Uninstall(context.Background(), dyn, fakeDiscovery(), UninstallOptions{
+		DryRun: true,
+		Log:    func(m string) { logs = append(logs, m) },
+	}); err != nil {
+		t.Fatalf("Uninstall(dry-run) error: %v", err)
+	}
+	// The CRD must still exist after a dry run.
+	if _, err := dyn.Resource(crdGVR).Get(context.Background(), "usageprofiles.kubetidy.io", metav1.GetOptions{}); err != nil {
+		t.Errorf("dry run should not delete the CRD, but it is gone: %v", err)
+	}
+	joined := strings.Join(logs, "\n")
+	if !strings.Contains(joined, "would delete") {
+		t.Errorf("dry-run logs should say 'would delete', got: %s", joined)
 	}
 }
 
 func TestUninstallNilDiscovery(t *testing.T) {
 	dyn := uninstallFakeDynamic()
-	if err := Uninstall(context.Background(), dyn, nil, false, nil); err == nil {
+	if err := Uninstall(context.Background(), dyn, nil, UninstallOptions{}); err == nil {
 		t.Error("expected an error with a nil discovery client")
 	}
 }

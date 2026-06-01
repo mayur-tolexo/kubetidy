@@ -143,10 +143,10 @@ func Install(ctx context.Context, dyn dynamic.Interface, disco discovery.Discove
 // keepCRDs, when true, removes only the operator and leaves the CRDs (and their recorded data)
 // in place — useful when several tools share the API or you want to redeploy without losing
 // history.
-func Uninstall(ctx context.Context, dyn dynamic.Interface, disco discovery.DiscoveryInterface, keepCRDs bool, log func(string)) error {
+func Uninstall(ctx context.Context, dyn dynamic.Interface, disco discovery.DiscoveryInterface, opts UninstallOptions) error {
 	logf := func(m string) {
-		if log != nil {
-			log(m)
+		if opts.Log != nil {
+			opts.Log(m)
 		}
 	}
 	mapper, err := newRESTMapper(disco)
@@ -154,35 +154,55 @@ func Uninstall(ctx context.Context, dyn dynamic.Interface, disco discovery.Disco
 		return fmt.Errorf("installer: building REST mapper: %w", err)
 	}
 
+	verb := "deleting"
+	if opts.DryRun {
+		verb = "would delete"
+	}
+
 	// Operator first (Deployment/RBAC/namespace), so the controller stops writing before its
 	// CRDs are removed.
-	logf("deleting operator (deployment, RBAC, namespace)")
-	if err := deleteManifest(ctx, dyn, mapper, operatorManifest); err != nil {
+	logf(verb + " operator (deployment, RBAC, namespace)")
+	if err := deleteManifest(ctx, dyn, mapper, operatorManifest, opts); err != nil {
 		return err
 	}
 
-	if keepCRDs {
+	if opts.KeepCRDs {
 		logf("operator removed (CRDs and recorded data kept)")
 		return nil
 	}
 
-	logf("deleting kubetidy CRDs (this also removes all recorded usage data)")
-	if err := deleteManifest(ctx, dyn, mapper, crdManifest); err != nil {
+	logf(verb + " kubetidy CRDs (this also removes all recorded usage data)")
+	if err := deleteManifest(ctx, dyn, mapper, crdManifest, opts); err != nil {
 		return err
 	}
-	logf("uninstall complete")
+	if opts.DryRun {
+		logf("dry run: nothing was deleted")
+	} else {
+		logf("uninstall complete")
+	}
 	return nil
 }
 
+// UninstallOptions tunes Uninstall.
+type UninstallOptions struct {
+	// KeepCRDs removes only the operator, leaving the CRDs and their recorded data.
+	KeepCRDs bool
+	// DryRun reports what would be deleted (per object) without deleting anything.
+	DryRun bool
+	// Log receives one-line progress messages. nil discards them.
+	Log func(string)
+}
+
 // deleteManifest decodes a (possibly multi-document) YAML manifest and deletes each object,
-// tolerating not-found so the operation is idempotent.
-func deleteManifest(ctx context.Context, dyn dynamic.Interface, mapper *restmapper.DeferredDiscoveryRESTMapper, manifest []byte) error {
+// tolerating not-found so the operation is idempotent. In dry-run mode it reports each object
+// instead of deleting it.
+func deleteManifest(ctx context.Context, dyn dynamic.Interface, mapper *restmapper.DeferredDiscoveryRESTMapper, manifest []byte, opts UninstallOptions) error {
 	objs, err := decodeObjects(manifest)
 	if err != nil {
 		return err
 	}
 	for _, obj := range objs {
-		if err := deleteObject(ctx, dyn, mapper, obj); err != nil {
+		if err := deleteObject(ctx, dyn, mapper, obj, opts); err != nil {
 			return err
 		}
 	}
@@ -190,8 +210,8 @@ func deleteManifest(ctx context.Context, dyn dynamic.Interface, mapper *restmapp
 }
 
 // deleteObject deletes a single unstructured object, treating not-found (object or its type)
-// as success.
-func deleteObject(ctx context.Context, dyn dynamic.Interface, mapper *restmapper.DeferredDiscoveryRESTMapper, obj *unstructured.Unstructured) error {
+// as success. In dry-run mode it logs the object that would be deleted and returns.
+func deleteObject(ctx context.Context, dyn dynamic.Interface, mapper *restmapper.DeferredDiscoveryRESTMapper, obj *unstructured.Unstructured, opts UninstallOptions) error {
 	gvk := obj.GroupVersionKind()
 	mapping, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
 	if err != nil {
@@ -203,14 +223,29 @@ func deleteObject(ctx context.Context, dyn dynamic.Interface, mapper *restmapper
 	}
 
 	var ri dynamic.ResourceInterface
+	scoped := obj.GetName()
 	if mapping.Scope.Name() == "namespace" {
 		ns := obj.GetNamespace()
 		if ns == "" {
 			ns = "default"
 		}
 		ri = dyn.Resource(mapping.Resource).Namespace(ns)
+		scoped = ns + "/" + obj.GetName()
 	} else {
 		ri = dyn.Resource(mapping.Resource)
+	}
+
+	// Dry run: report whether the object currently exists, delete nothing.
+	if opts.DryRun {
+		_, gerr := ri.Get(ctx, obj.GetName(), metav1.GetOptions{})
+		state := "present"
+		if apierrors.IsNotFound(gerr) {
+			state = "absent"
+		}
+		if opts.Log != nil {
+			opts.Log(fmt.Sprintf("  - %s %s (%s)", gvk.Kind, scoped, state))
+		}
+		return nil
 	}
 
 	err = ri.Delete(ctx, obj.GetName(), metav1.DeleteOptions{})

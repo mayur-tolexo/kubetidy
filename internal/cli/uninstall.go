@@ -17,6 +17,7 @@ type uninstallFlags struct {
 	kubeContext string
 	keepCRDs    bool
 	yes         bool
+	dryRun      bool
 }
 
 // confirmReader is the input used for the interactive confirmation prompt; overridable in
@@ -26,13 +27,15 @@ var confirmReader io.Reader = os.Stdin
 func newUninstallCommand() *cobra.Command {
 	f := &uninstallFlags{}
 	cmd := &cobra.Command{
-		Use:   "uninstall",
-		Short: "Remove kubetidy's in-cluster components (operator + CRDs) — the inverse of init",
-		Long: "uninstall deletes everything `kubectl tidy init` created: the operator " +
-			"(Deployment, RBAC, namespace) and the kubetidy CRDs. Deleting the CRDs also removes " +
-			"all recorded usage history (UsageProfile, ClusterUsageSummary, Recommendation).\n\n" +
-			"Use --keep-crds to remove only the operator and preserve the CRDs and their data " +
-			"(e.g. before redeploying). It is idempotent: already-absent objects are skipped.",
+		Use:     "uninstall",
+		Aliases: []string{"cleanup"},
+		Short:   "Remove kubetidy's in-cluster components (operator + CRDs) — the inverse of init",
+		Long: "uninstall (alias: cleanup) deletes everything `kubectl tidy init` created: the " +
+			"operator (Deployment, RBAC, namespace) and the kubetidy CRDs. Deleting the CRDs also " +
+			"removes all recorded usage history (UsageProfile, ClusterUsageSummary, Recommendation).\n\n" +
+			"Use --dry-run to list what would be removed without deleting anything. Use --keep-crds " +
+			"to remove only the operator and preserve the CRDs and their data (e.g. before " +
+			"redeploying). It is idempotent: already-absent objects are skipped.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runUninstall(cmd.Context(), f)
 		},
@@ -40,6 +43,7 @@ func newUninstallCommand() *cobra.Command {
 	flags := cmd.Flags()
 	flags.StringVar(&f.kubeContext, "context", "", "kubeconfig context to use")
 	flags.BoolVar(&f.keepCRDs, "keep-crds", false, "remove only the operator; keep the CRDs and recorded data")
+	flags.BoolVar(&f.dryRun, "dry-run", false, "list what would be removed without deleting anything")
 	flags.BoolVarP(&f.yes, "yes", "y", false, "skip the confirmation prompt")
 	return cmd
 }
@@ -49,7 +53,8 @@ func runUninstall(ctx context.Context, f *uninstallFlags) error {
 		ctx = context.Background()
 	}
 
-	if !f.yes {
+	// A real (non-dry-run) uninstall is destructive, so confirm first unless --yes.
+	if !f.dryRun && !f.yes {
 		ok, err := confirmUninstall(f.keepCRDs)
 		if err != nil {
 			return err
@@ -70,11 +75,19 @@ func runUninstall(ctx context.Context, f *uninstallFlags) error {
 	}
 
 	logf := func(msg string) { _, _ = fmt.Fprintln(os.Stdout, "•", msg) }
-	if err := installer.Uninstall(ctx, dyn, disco, f.keepCRDs, logf); err != nil {
+	if err := installer.Uninstall(ctx, dyn, disco, installer.UninstallOptions{
+		KeepCRDs: f.keepCRDs,
+		DryRun:   f.dryRun,
+		Log:      logf,
+	}); err != nil {
 		return err
 	}
 
-	_, err = io.WriteString(os.Stdout, "\n✓ kubetidy removed from the cluster.\n")
+	if f.dryRun {
+		_, err = io.WriteString(os.Stdout, "\nDry run — nothing was deleted. Re-run without --dry-run to apply.\n")
+	} else {
+		_, err = io.WriteString(os.Stdout, "\n✓ kubetidy removed from the cluster.\n")
+	}
 	return err
 }
 
