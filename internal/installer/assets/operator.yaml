@@ -1,0 +1,83 @@
+# Deployment + RBAC for the kubetidy operator (usage historian).
+#
+# The operator is strictly read-only with respect to workloads: it reads
+# Deployments/StatefulSets/DaemonSets, pods, and pod metrics, and only writes its own
+# UsageProfile custom resources. It never evicts or resizes anything.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubetidy-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubetidy-operator
+  namespace: kubetidy-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubetidy-operator
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: ["kubetidy.io"]
+    resources: ["usageprofiles", "usageprofiles/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubetidy-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubetidy-operator
+subjects:
+  - kind: ServiceAccount
+    name: kubetidy-operator
+    namespace: kubetidy-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubetidy-operator
+  namespace: kubetidy-system
+  labels:
+    app: kubetidy-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kubetidy-operator
+  template:
+    metadata:
+      labels:
+        app: kubetidy-operator
+    spec:
+      serviceAccountName: kubetidy-operator
+      containers:
+        - name: operator
+          image: docker.io/mayurdas1991/kubetidy-operator:latest
+          imagePullPolicy: Always
+          args: ["--scrape-interval=30s"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

@@ -12,8 +12,15 @@ const (
 	// TierStatic means no usage data was available; findings come from static analysis
 	// of the spec (e.g. missing requests/limits, absurd request:limit ratios).
 	TierStatic EvidenceTier = iota
-	// TierSnapshot (Tier 0) means a live usage snapshot from metrics-server.
+	// TierSnapshot is a single live usage snapshot from metrics-server. It is only a degraded
+	// fallback (used when the kubetidy operator is not installed): a single sample cannot see
+	// peaks, so recommendations from it are conservative and low-confidence.
 	TierSnapshot
+	// TierOperator (Tier 0) is the primary "no Prometheus required" tier: historical
+	// percentiles accumulated by the in-cluster kubetidy operator from metrics-server over
+	// time — Prometheus-grade signal with zero external dependencies. See
+	// docs/design/operator.md.
+	TierOperator
 	// TierHistorical (Tier 1) means historical percentiles from Prometheus.
 	TierHistorical
 	// TierAllocated (Tier 2) means precise allocated cost from OpenCost.
@@ -26,7 +33,9 @@ func (t EvidenceTier) String() string {
 	case TierStatic:
 		return "static (no usage data)"
 	case TierSnapshot:
-		return "0 (metrics-server)"
+		return "snapshot (metrics-server, limited)"
+	case TierOperator:
+		return "0 (kubetidy operator)"
 	case TierHistorical:
 		return "1 (Prometheus)"
 	case TierAllocated:

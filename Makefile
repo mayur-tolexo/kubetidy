@@ -13,11 +13,22 @@ LDFLAGS    := -s -w -X $(PKG)/internal/version.Version=$(VERSION) -X $(PKG)/inte
 GOLANGCI_LINT ?= $(shell go env GOPATH)/bin/golangci-lint
 GOLANGCI_VERSION ?= v2.6.0
 
+# operator image (Docker Hub). The image is always Linux; PUSH_PLATFORMS is multi-arch so it
+# runs on amd64 clusters and arm64 (Apple-Silicon kind / Graviton) alike. LOCAL_PLATFORM is
+# the single Linux arch used for a local kind load (defaults to the host's arch).
+OPERATOR_IMAGE  ?= docker.io/mayurdas1991/kubetidy-operator
+OPERATOR_TAG    ?= latest
+PUSH_PLATFORMS  ?= linux/amd64,linux/arm64
+LOCAL_PLATFORM  ?= linux/$(shell go env GOARCH)
+
 # kind / demo settings
 KIND_CLUSTER   := kubetidy
 KIND_CONFIG    := hack/kind/cluster.yaml
 DEMO_MANIFEST  := hack/kind/demo-workloads.yaml
+PROM_MANIFEST  := hack/kind/prometheus.yaml
+PROM_NS        := monitoring
 DEMO_NS        := kubetidy-demo
+PROM_URL       ?= http://prometheus-server.monitoring.svc:80
 
 # ANSI helpers for a readable `make help`.
 BLUE  := \033[36m
@@ -124,9 +135,45 @@ demo-deploy: ## Deploy over-provisioned demo workloads into the kind cluster
 	kubectl --context kind-$(KIND_CLUSTER) apply -f $(DEMO_MANIFEST)
 	kubectl --context kind-$(KIND_CLUSTER) -n $(DEMO_NS) rollout status deployment/checkout-api --timeout=120s
 
+.PHONY: prometheus
+prometheus: ## Deploy a minimal Prometheus into the cluster (unlocks Tier 1)
+	kubectl --context kind-$(KIND_CLUSTER) apply -f $(PROM_MANIFEST)
+	kubectl --context kind-$(KIND_CLUSTER) -n $(PROM_NS) rollout status deployment/prometheus-server --timeout=180s
+	@echo "Prometheus ready. kubetidy auto-detects it; scans now run at Tier 1."
+
+.PHONY: crd-install
+crd-install: ## Install just the UsageProfile CRD into the kind cluster
+	kubectl --context kind-$(KIND_CLUSTER) apply -f config/crd/usageprofiles.yaml
+
+.PHONY: operator-image
+operator-image: ## Build the operator image for the local Linux arch and load it into Docker
+	docker buildx build --platform $(LOCAL_PLATFORM) --load \
+		-t $(OPERATOR_IMAGE):$(OPERATOR_TAG) -f hack/operator/Dockerfile .
+	@echo "built $(LOCAL_PLATFORM) image $(OPERATOR_IMAGE):$(OPERATOR_TAG)"
+
+.PHONY: operator-push
+operator-push: ## Build a multi-arch Linux image and push to Docker Hub (run `docker login` first)
+	docker buildx build --platform $(PUSH_PLATFORMS) --push \
+		-t $(OPERATOR_IMAGE):$(OPERATOR_TAG) -f hack/operator/Dockerfile .
+	@echo "pushed $(PUSH_PLATFORMS) image $(OPERATOR_IMAGE):$(OPERATOR_TAG) — clusters can now run kubectl tidy init"
+
+.PHONY: operator-deploy
+operator-deploy: ## Build, load, and deploy the kubetidy operator into the kind cluster (Tier 0)
+	docker buildx build --platform $(LOCAL_PLATFORM) --load \
+		-t $(OPERATOR_IMAGE):$(OPERATOR_TAG) -f hack/operator/Dockerfile .
+	kind load docker-image $(OPERATOR_IMAGE):$(OPERATOR_TAG) --name $(KIND_CLUSTER)
+	kubectl --context kind-$(KIND_CLUSTER) apply -f config/crd/usageprofiles.yaml
+	kubectl --context kind-$(KIND_CLUSTER) apply -f config/operator/operator.yaml
+	kubectl --context kind-$(KIND_CLUSTER) -n kubetidy-system rollout status deployment/kubetidy-operator --timeout=120s
+	@echo "Operator running. Give it a few minutes to accumulate history; scans then run at Tier 0 (operator) with no Prometheus."
+
 .PHONY: demo-scan
 demo-scan: build ## Run a scan against the demo namespace in the kind cluster
 	$(BIN_DIR)/kubetidy scan --context kind-$(KIND_CLUSTER) -n $(DEMO_NS)
+
+.PHONY: demo-scan-prom
+demo-scan-prom: build ## Tier-1 scan: scan the demo namespace using Prometheus
+	$(BIN_DIR)/kubetidy scan --context kind-$(KIND_CLUSTER) -n $(DEMO_NS) --prometheus-url $(PROM_URL)
 
 .PHONY: demo-diff
 demo-diff: build ## Show reversible kubectl patches for the demo namespace
@@ -140,6 +187,17 @@ e2e: ## One command: create kind cluster, install metrics-server, deploy demo, s
 	@echo "waiting ~30s for metrics-server to collect a first sample..."
 	@sleep 30
 	@$(MAKE) demo-scan
+	@$(MAKE) demo-diff
+
+.PHONY: e2e-prom
+e2e-prom: ## Full Tier-1 demo: kind + metrics + Prometheus + demo, then a Tier-1 scan
+	@$(MAKE) kind-up
+	@$(MAKE) kind-metrics
+	@$(MAKE) prometheus
+	@$(MAKE) demo-deploy
+	@echo "waiting ~60s for Prometheus to scrape a usable window..."
+	@sleep 60
+	@$(MAKE) demo-scan-prom
 	@$(MAKE) demo-diff
 
 .PHONY: kind-down
