@@ -163,12 +163,12 @@ func writeRecommendations(b *strings.Builder, recs []model.Recommendation, opts 
 	// Flushing to an in-memory strings.Builder cannot fail.
 	_, _ = fmt.Fprintf(tw, "  WORKLOAD\tCPU\tMEM\tSAVINGS\tCONF\n")
 	for _, rec := range recs {
-		_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%d%%\n",
+		_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n",
 			workloadLabel(rec),
 			cpuTransition(rec),
 			memTransition(rec),
 			savingsCell(rec),
-			rec.Confidence.Percent(),
+			confidenceCell(rec),
 		)
 	}
 	_ = tw.Flush()
@@ -199,7 +199,7 @@ func writeRecommendations(b *strings.Builder, recs []model.Recommendation, opts 
 func writeLegend(b *strings.Builder, opts Options) {
 	lines := []string{
 		"CPU/MEM = current → proposed request · SAVINGS = $/mo (↑ grow = reliability, not a saving)",
-		"conf = confidence in this recommendation; higher data tiers (Prometheus, OpenCost) score higher.",
+		"CONF = confidence: ▒ low · ▓ med · █ high — grows with data history (tier, window, samples). --explain shows the %.",
 	}
 	for _, l := range lines {
 		if opts.Color {
@@ -234,6 +234,20 @@ func savingsCell(rec model.Recommendation) string {
 	return fmt.Sprintf("%s/mo", formatDollarsAbs(rec.MonthlySavings))
 }
 
+// confidenceCell renders the qualitative confidence band with a shaded glyph that reads as a
+// fill level even without color. A precise percentage is intentionally omitted here (it implies
+// false precision); the number is available under --explain.
+func confidenceCell(rec model.Recommendation) string {
+	switch rec.Confidence.Band() {
+	case model.ConfidenceHigh:
+		return "█ high"
+	case model.ConfidenceMedium:
+		return "▓ med"
+	default:
+		return "▒ low"
+	}
+}
+
 // JSON renders a stable machine-readable schema of the scan result.
 //
 // The schema is exactly the JSON encoding of model.ScanResult: an object with
@@ -265,7 +279,7 @@ func Explain(w io.Writer, rec model.Recommendation) error {
 	} else {
 		fmt.Fprintf(&b, "  savings:  %s / month\n", formatSignedDollars(rec.MonthlySavings))
 	}
-	fmt.Fprintf(&b, "  confidence:  %d%% (%s)\n", rec.Confidence.Percent(), rec.Confidence.Reason)
+	fmt.Fprintf(&b, "  confidence:  %s (%d%%) — %s\n", rec.Confidence.Band(), rec.Confidence.Percent(), rec.Confidence.Reason)
 	fmt.Fprintf(&b, "  tier:  %s\n", rec.Tier.String())
 	if rec.Evidence != "" {
 		fmt.Fprintf(&b, "  evidence:  %s\n", rec.Evidence)

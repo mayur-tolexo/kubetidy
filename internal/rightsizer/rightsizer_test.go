@@ -346,8 +346,22 @@ func TestConfidence(t *testing.T) {
 				CPUMillicores: model.Percentiles{CV: 0.1},
 				MemoryBytes:   model.Percentiles{CV: 0.05},
 			},
-			minScore: 0.93,
-			maxScore: 0.99,
+			// Fully mature (long window + many samples): ~tier base 0.9 minus a small variance
+			// penalty. No bonuses push above the base any more.
+			minScore: 0.84,
+			maxScore: 0.90,
+		},
+		{
+			name: "operator warm-up (few samples, short window) is low confidence",
+			usage: model.UsageStats{
+				Tier:    model.TierOperator,
+				Window:  12 * time.Minute,
+				Samples: 2,
+			},
+			// The whole point of the maturity gate: two readings over 12m must NOT inherit the
+			// operator's high base — it floors near immatureFloor (0.30).
+			minScore: 0.28,
+			maxScore: 0.35,
 		},
 		{
 			name: "snapshot single sample capped at 0.6",
@@ -381,10 +395,10 @@ func TestConfidence(t *testing.T) {
 			usage: model.UsageStats{
 				Tier:    model.TierAllocated,
 				Window:  14 * day,
-				Samples: 1000,
+				Samples: 50000, // mature sample count so the tier base is fully earned
 			},
-			minScore: 0.90,
-			maxScore: 0.99,
+			minScore: 0.85,
+			maxScore: 0.92,
 		},
 		{
 			name: "high variance penalizes score and clamps to floor",
@@ -402,8 +416,9 @@ func TestConfidence(t *testing.T) {
 				Samples:       100000,
 				CPUMillicores: model.Percentiles{CV: 1.0},
 			},
-			minScore: 0.65,
-			maxScore: 0.75,
+			// Mature (maturity 1) but full variance penalty: 0.30 + (0.9-0.30) - 0.30 = 0.60.
+			minScore: 0.55,
+			maxScore: 0.65,
 		},
 	}
 

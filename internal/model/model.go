@@ -176,6 +176,31 @@ type Confidence struct {
 // Percent returns the confidence as an integer percentage 0..100.
 func (c Confidence) Percent() int { return int(c.Score*100 + 0.5) }
 
+// ConfidenceBand is a coarse, human-facing bucket for a confidence score. A precise percentage
+// implies false precision ("85%" from two samples is misleading), so the UI leads with the band
+// and keeps the number for detail views.
+type ConfidenceBand string
+
+// The three confidence buckets, from least to most trustworthy.
+const (
+	ConfidenceLow    ConfidenceBand = "low"
+	ConfidenceMedium ConfidenceBand = "med"
+	ConfidenceHigh   ConfidenceBand = "high"
+)
+
+// Band buckets the score: < 0.60 low, < 0.80 medium, otherwise high. The low cutoff sits above
+// the snapshot ceiling (0.60) so a single-snapshot recommendation never reads above "low".
+func (c Confidence) Band() ConfidenceBand {
+	switch {
+	case c.Score < 0.60:
+		return ConfidenceLow
+	case c.Score < 0.80:
+		return ConfidenceMedium
+	default:
+		return ConfidenceHigh
+	}
+}
+
 // Recommendation is the central, action-ready unit kubetidy produces. The MVP only reads,
 // but this carries enough to generate a patch later (target ref, container, current vs
 // proposed), so the future action layer is a new consumer, not a rewrite.

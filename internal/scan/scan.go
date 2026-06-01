@@ -51,15 +51,6 @@ func (e *Engine) Run(ctx context.Context) (model.ScanResult, error) {
 		result.Tier = e.Usage.Tier()
 	}
 
-	// Surface a prominent caveat when running on snapshot-only data, so nobody applies an
-	// aggressive downsize from a single reading without understanding the risk.
-	if result.Tier == model.TierSnapshot {
-		result.Warnings = append(result.Warnings,
-			"Tier 0 (metrics-server): recommendations are based on a single live snapshot, not historical peaks. "+
-				"Treat them as directional and verify before applying. For safe, high-confidence numbers, point kubetidy "+
-				"at Prometheus with --prometheus-url.")
-	}
-
 	for _, w := range e.Workloads {
 		stats, err := e.Usage.Usage(ctx, w)
 		if err != nil {
@@ -114,8 +105,46 @@ func (e *Engine) Run(ctx context.Context) (model.ScanResult, error) {
 		}
 	}
 
+	// Report the tier that ACTUALLY backed the findings, not the provider's declared tier: with
+	// the operator+snapshot fallback a provider may declare Tier 0 while every workload was
+	// served from the snapshot during warm-up. The banner should be honest about that.
+	if t, ok := dominantTier(result.Recommendations); ok {
+		result.Tier = t
+	}
+
+	// Surface a prominent caveat when the findings rest on snapshot-only data, so nobody applies
+	// an aggressive downsize from a single reading without understanding the risk. Prepended so
+	// it stays the first, most visible note.
+	if result.Tier == model.TierSnapshot {
+		result.Warnings = append([]string{
+			"snapshot (metrics-server): recommendations are based on a single live reading, not historical peaks. " +
+				"Treat them as directional and verify before applying. For high-confidence numbers, install the " +
+				"kubetidy operator (`kubectl tidy init`) or point at Prometheus with --prometheus-url.",
+		}, result.Warnings...)
+	}
+
 	result.EfficiencyScore, result.ScoreBreakdown = score.Compute(result)
 	return result, nil
+}
+
+// dominantTier returns the evidence tier backing the most recommendations (the honest headline
+// tier). Ties break toward the higher tier. ok is false when there are no recommendations, so
+// the caller keeps the provider's declared tier.
+func dominantTier(recs []model.Recommendation) (model.EvidenceTier, bool) {
+	if len(recs) == 0 {
+		return 0, false
+	}
+	counts := map[model.EvidenceTier]int{}
+	for _, r := range recs {
+		counts[r.Tier]++
+	}
+	best := recs[0].Tier
+	for tier, n := range counts {
+		if n > counts[best] || (n == counts[best] && tier > best) {
+			best = tier
+		}
+	}
+	return best, true
 }
 
 // noiseFloorDollars is the minimum monthly saving for a recommendation to be worth showing.
@@ -269,9 +298,14 @@ func formatWindow(d time.Duration) string {
 	if d <= 0 {
 		return "0"
 	}
-	days := d.Hours() / 24
-	if days >= 1 {
+	if days := d.Hours() / 24; days >= 1 {
 		return fmt.Sprintf("%dd", int64(math.Round(days)))
 	}
-	return fmt.Sprintf("%dh", int64(math.Round(d.Hours())))
+	if d.Hours() >= 1 {
+		return fmt.Sprintf("%dh", int64(math.Round(d.Hours())))
+	}
+	if d.Minutes() >= 1 {
+		return fmt.Sprintf("%dm", int64(math.Round(d.Minutes())))
+	}
+	return "<1m"
 }
