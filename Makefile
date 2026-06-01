@@ -212,6 +212,17 @@ demo-scan-prom: build ## Tier-1 scan: scan the demo namespace using Prometheus
 demo-diff: build ## Show reversible kubectl patches for the demo namespace
 	$(BIN_DIR)/kubetidy diff --context kind-$(KIND_CLUSTER) -n $(DEMO_NS)
 
+.PHONY: demo-gif
+demo-gif: build ## Record the README demo GIF (Tier 1). Prereq: `make e2e-prom`; needs vhs (brew install vhs)
+	@command -v vhs >/dev/null || { echo "vhs not found — install with: brew install vhs"; exit 1; }
+	kind export kubeconfig --name $(KIND_CLUSTER) --kubeconfig /tmp/kubetidy-demo.kubeconfig
+	@kubectl --context kind-$(KIND_CLUSTER) -n $(PROM_NS) port-forward svc/prometheus-server 9090:80 >/tmp/kubetidy-pf.log 2>&1 & \
+		PF=$$!; sleep 4; \
+		vhs hack/demo/demo.tape; RC=$$?; \
+		kill $$PF 2>/dev/null || true; \
+		exit $$RC
+	@echo "wrote docs/assets/demo.gif"
+
 .PHONY: e2e
 e2e: ## One command: create kind cluster, install metrics-server, deploy demo, scan + diff
 	@$(MAKE) kind-up
