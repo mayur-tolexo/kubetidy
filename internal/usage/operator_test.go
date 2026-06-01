@@ -2,7 +2,6 @@ package usage
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
@@ -43,7 +42,7 @@ func newOperatorClient(t *testing.T, profiles ...usageprofile.UsageProfile) *dyn
 // The object name follows the "<Kind>-<name>" convention the provider looks up by.
 func sampleProfile(ns string, kind model.WorkloadKind, name string) usageprofile.UsageProfile {
 	return usageprofile.UsageProfile{
-		Name:      fmt.Sprintf("%s-%s", kind, name),
+		Name:      usageprofile.ObjectName(string(kind), name),
 		Namespace: ns,
 		Spec: usageprofile.Spec{
 			TargetRef: usageprofile.TargetRef{Kind: string(kind), Name: name},
@@ -84,15 +83,16 @@ func TestOperatorProvider_SeededFixtureIsRetrievable(t *testing.T) {
 	prof := sampleProfile(ns, model.KindDeployment, "checkout")
 	client := newOperatorClient(t, prof)
 
+	want := usageprofile.ObjectName(string(model.KindDeployment), "checkout")
 	got, err := client.
 		Resource(usageprofile.GroupVersionResource()).
 		Namespace(ns).
-		Get(context.Background(), "Deployment-checkout", metav1.GetOptions{})
+		Get(context.Background(), want, metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("seeded fixture not retrievable: %v", err)
 	}
-	if got.GetName() != "Deployment-checkout" {
-		t.Fatalf("retrieved name = %q, want %q", got.GetName(), "Deployment-checkout")
+	if got.GetName() != want {
+		t.Fatalf("retrieved name = %q, want %q", got.GetName(), want)
 	}
 }
 

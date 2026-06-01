@@ -38,6 +38,10 @@ jobs:
         with:
           go-version: "1.26"
           cache: true
-      - uses: golangci/golangci-lint-action@v6
+      # golangci-lint v2 is required: it parses our v2 .golangci.yml and is built with a Go
+      # toolchain new enough for the module's go 1.26 directive (v1 builds use go1.24 and fail
+      # with "Go language version used to build golangci-lint is lower than the targeted Go
+      # version"). The v8 action installs v2 releases.
+      - uses: golangci/golangci-lint-action@v8
         with:
-          version: latest
+          version: v2.12.2

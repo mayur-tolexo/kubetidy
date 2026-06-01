@@ -22,7 +22,7 @@ func TestRehydrate_SeedsStateAcrossRestart(t *testing.T) {
 			t.Fatalf("c1 Tick %d: %v", i, err)
 		}
 	}
-	prof, _ := store.get("ns1", "Deployment-web")
+	prof, _ := store.get("ns1", "deployment-web")
 	if prof.Status.SampleCount != 3 {
 		t.Fatalf("setup: SampleCount = %d, want 3", prof.Status.SampleCount)
 	}
@@ -34,7 +34,7 @@ func TestRehydrate_SeedsStateAcrossRestart(t *testing.T) {
 	if err := c2.Tick(context.Background()); err != nil {
 		t.Fatalf("c2 Tick: %v", err)
 	}
-	prof2, _ := store.get("ns1", "Deployment-web")
+	prof2, _ := store.get("ns1", "deployment-web")
 	if prof2.Status.SampleCount != 4 {
 		t.Errorf("SampleCount after rehydrate+tick = %d, want 4 (3 prior + 1 new)", prof2.Status.SampleCount)
 	}
@@ -75,7 +75,7 @@ func TestRehydrate_InvalidHistogramFallsBackButKeepsCount(t *testing.T) {
 	store := newFakeStore()
 	prof := usageprofile.UsageProfile{
 		Namespace: "ns1",
-		Name:      "Deployment-web",
+		Name:      "deployment-web",
 		Status: usageprofile.Status{
 			SampleCount:   7,
 			ObservedSince: "2026-05-30T00:00:00Z",
@@ -97,7 +97,7 @@ func TestRehydrate_InvalidHistogramFallsBackButKeepsCount(t *testing.T) {
 	if err := c.Tick(context.Background()); err != nil {
 		t.Fatalf("Tick after rehydrate: %v", err)
 	}
-	prof2, _ := store.get("ns1", "Deployment-web")
+	prof2, _ := store.get("ns1", "deployment-web")
 	// 7 carried over + 1 new observation.
 	if prof2.Status.SampleCount != 8 {
 		t.Errorf("SampleCount = %d, want 8 (7 seeded + 1 new)", prof2.Status.SampleCount)

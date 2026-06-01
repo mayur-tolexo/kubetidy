@@ -19,6 +19,7 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -31,10 +32,33 @@ import (
 )
 
 //go:embed assets/usageprofiles.yaml
-var crdManifest []byte
+var usageProfileCRD []byte
+
+//go:embed assets/clusterusagesummaries.yaml
+var clusterUsageSummaryCRD []byte
+
+//go:embed assets/recommendations.yaml
+var recommendationCRD []byte
 
 //go:embed assets/operator.yaml
 var operatorManifest []byte
+
+// crdManifest is the concatenation of all kubetidy CRDs, applied together by init. The
+// UsageProfile CRD is first so we can wait on it specifically before deploying the operator.
+var crdManifest = joinManifests(usageProfileCRD, clusterUsageSummaryCRD, recommendationCRD)
+
+// joinManifests concatenates YAML documents with a separator so they decode as a multi-doc
+// stream.
+func joinManifests(docs ...[]byte) []byte {
+	var out []byte
+	for i, d := range docs {
+		if i > 0 {
+			out = append(out, []byte("\n---\n")...)
+		}
+		out = append(out, d...)
+	}
+	return out
+}
 
 // fieldManager identifies kubetidy as the owner of the fields it applies (server-side apply).
 const fieldManager = "kubetidy"
@@ -79,13 +103,19 @@ func Install(ctx context.Context, dyn dynamic.Interface, disco discovery.Discove
 		return fmt.Errorf("installer: building REST mapper: %w", err)
 	}
 
-	opts.log("applying UsageProfile CRD")
+	opts.log("applying kubetidy CRDs (UsageProfile, ClusterUsageSummary, Recommendation)")
 	if err := applyManifest(ctx, dyn, mapper, crdManifest); err != nil {
 		return err
 	}
-	opts.log("waiting for CRD to become established")
-	if err := waitCRDEstablished(ctx, dyn, "usageprofiles.kubetidy.io"); err != nil {
-		return err
+	opts.log("waiting for CRDs to become established")
+	for _, name := range []string{
+		"usageprofiles.kubetidy.io",
+		"clusterusagesummaries.kubetidy.io",
+		"recommendations.kubetidy.io",
+	} {
+		if err := waitCRDEstablished(ctx, dyn, name); err != nil {
+			return err
+		}
 	}
 
 	if !opts.IncludeOperator {
@@ -105,8 +135,131 @@ func Install(ctx context.Context, dyn dynamic.Interface, disco discovery.Discove
 	return nil
 }
 
-// CRDManifest returns the embedded UsageProfile CRD YAML, for callers that want to print it
-// (e.g. `init --print`) instead of applying it.
+// Uninstall removes everything Install created: the operator (Deployment, RBAC, namespace)
+// first, then the CRDs. Deleting a CRD cascades to all of its custom resources, so this also
+// removes every UsageProfile, ClusterUsageSummary and Recommendation. It is idempotent —
+// already-absent objects are skipped, so a partial prior install still cleans up fully.
+//
+// keepCRDs, when true, removes only the operator and leaves the CRDs (and their recorded data)
+// in place — useful when several tools share the API or you want to redeploy without losing
+// history.
+func Uninstall(ctx context.Context, dyn dynamic.Interface, disco discovery.DiscoveryInterface, opts UninstallOptions) error {
+	logf := func(m string) {
+		if opts.Log != nil {
+			opts.Log(m)
+		}
+	}
+	mapper, err := newRESTMapper(disco)
+	if err != nil {
+		return fmt.Errorf("installer: building REST mapper: %w", err)
+	}
+
+	verb := "deleting"
+	if opts.DryRun {
+		verb = "would delete"
+	}
+
+	// Operator first (Deployment/RBAC/namespace), so the controller stops writing before its
+	// CRDs are removed.
+	logf(verb + " operator (deployment, RBAC, namespace)")
+	if err := deleteManifest(ctx, dyn, mapper, operatorManifest, opts); err != nil {
+		return err
+	}
+
+	if opts.KeepCRDs {
+		logf("operator removed (CRDs and recorded data kept)")
+		return nil
+	}
+
+	logf(verb + " kubetidy CRDs (this also removes all recorded usage data)")
+	if err := deleteManifest(ctx, dyn, mapper, crdManifest, opts); err != nil {
+		return err
+	}
+	if opts.DryRun {
+		logf("dry run: nothing was deleted")
+	} else {
+		logf("uninstall complete")
+	}
+	return nil
+}
+
+// UninstallOptions tunes Uninstall.
+type UninstallOptions struct {
+	// KeepCRDs removes only the operator, leaving the CRDs and their recorded data.
+	KeepCRDs bool
+	// DryRun reports what would be deleted (per object) without deleting anything.
+	DryRun bool
+	// Log receives one-line progress messages. nil discards them.
+	Log func(string)
+}
+
+// deleteManifest decodes a (possibly multi-document) YAML manifest and deletes each object,
+// tolerating not-found so the operation is idempotent. In dry-run mode it reports each object
+// instead of deleting it.
+func deleteManifest(ctx context.Context, dyn dynamic.Interface, mapper *restmapper.DeferredDiscoveryRESTMapper, manifest []byte, opts UninstallOptions) error {
+	objs, err := decodeObjects(manifest)
+	if err != nil {
+		return err
+	}
+	for _, obj := range objs {
+		if err := deleteObject(ctx, dyn, mapper, obj, opts); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// deleteObject deletes a single unstructured object, treating not-found (object or its type)
+// as success. In dry-run mode it logs the object that would be deleted and returns.
+func deleteObject(ctx context.Context, dyn dynamic.Interface, mapper *restmapper.DeferredDiscoveryRESTMapper, obj *unstructured.Unstructured, opts UninstallOptions) error {
+	gvk := obj.GroupVersionKind()
+	mapping, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+	if err != nil {
+		// The type isn't registered (e.g. CRD already gone) — nothing to delete.
+		if meta.IsNoMatchError(err) {
+			return nil
+		}
+		return fmt.Errorf("installer: no REST mapping for %s: %w", gvk, err)
+	}
+
+	var ri dynamic.ResourceInterface
+	scoped := obj.GetName()
+	if mapping.Scope.Name() == "namespace" {
+		ns := obj.GetNamespace()
+		if ns == "" {
+			ns = "default"
+		}
+		ri = dyn.Resource(mapping.Resource).Namespace(ns)
+		scoped = ns + "/" + obj.GetName()
+	} else {
+		ri = dyn.Resource(mapping.Resource)
+	}
+
+	// Dry run: report whether the object currently exists, delete nothing.
+	if opts.DryRun {
+		_, gerr := ri.Get(ctx, obj.GetName(), metav1.GetOptions{})
+		state := "present"
+		if apierrors.IsNotFound(gerr) {
+			state = "absent"
+		}
+		if opts.Log != nil {
+			opts.Log(fmt.Sprintf("  - %s %s (%s)", gvk.Kind, scoped, state))
+		}
+		return nil
+	}
+
+	err = ri.Delete(ctx, obj.GetName(), metav1.DeleteOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("installer: deleting %s/%s: %w", gvk.Kind, obj.GetName(), err)
+	}
+	return nil
+}
+
+// CRDManifest returns the embedded kubetidy CRD YAML (all three CRDs), for callers that want
+// to print it (e.g. `init --print`) instead of applying it.
 func CRDManifest() []byte { return crdManifest }
 
 // OperatorManifest returns the embedded operator (namespace, RBAC, Deployment) YAML, for

@@ -29,7 +29,13 @@ rules:
     resources: ["pods"]
     verbs: ["get", "list"]
   - apiGroups: ["kubetidy.io"]
-    resources: ["usageprofiles", "usageprofiles/status"]
+    resources:
+      - "usageprofiles"
+      - "usageprofiles/status"
+      - "clusterusagesummaries"
+      - "clusterusagesummaries/status"
+      - "recommendations"
+      - "recommendations/status"
     verbs: ["get", "list", "watch", "create", "update", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

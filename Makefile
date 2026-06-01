@@ -11,7 +11,10 @@ DATE       ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS    := -s -w -X $(PKG)/internal/version.Version=$(VERSION) -X $(PKG)/internal/version.Commit=$(COMMIT) -X $(PKG)/internal/version.Date=$(DATE)
 
 GOLANGCI_LINT ?= $(shell go env GOPATH)/bin/golangci-lint
-GOLANGCI_VERSION ?= v2.6.0
+GOLANGCI_VERSION ?= v2.12.2
+
+CONTROLLER_GEN ?= $(shell go env GOPATH)/bin/controller-gen
+CONTROLLER_GEN_VERSION ?= v0.16.5
 
 # operator image (Docker Hub). The image is always Linux; PUSH_PLATFORMS is multi-arch so it
 # runs on amd64 clusters and arm64 (Apple-Silicon kind / Graviton) alike. LOCAL_PLATFORM is
@@ -49,6 +52,17 @@ help: ## Show this help
 .PHONY: deps
 deps: ## Download and tidy module dependencies
 	go mod tidy
+
+.PHONY: generate
+generate: ## Regenerate CRDs + DeepCopy from api/ markers (controller-gen)
+	@command -v $(CONTROLLER_GEN) >/dev/null 2>&1 || \
+		go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
+	$(CONTROLLER_GEN) object paths=./api/...
+	$(CONTROLLER_GEN) crd:allowDangerousTypes=true paths=./api/... output:crd:dir=config/crd
+	@cp config/crd/kubetidy.io_usageprofiles.yaml internal/installer/assets/usageprofiles.yaml
+	@cp config/crd/kubetidy.io_clusterusagesummaries.yaml internal/installer/assets/clusterusagesummaries.yaml
+	@cp config/crd/kubetidy.io_recommendations.yaml internal/installer/assets/recommendations.yaml
+	@echo "regenerated CRDs + deepcopy; copied CRDs into installer assets"
 
 .PHONY: build
 build: ## Build the binary as both kubetidy and kubectl-tidy into ./bin
@@ -142,8 +156,8 @@ prometheus: ## Deploy a minimal Prometheus into the cluster (unlocks Tier 1)
 	@echo "Prometheus ready. kubetidy auto-detects it; scans now run at Tier 1."
 
 .PHONY: crd-install
-crd-install: ## Install just the UsageProfile CRD into the kind cluster
-	kubectl --context kind-$(KIND_CLUSTER) apply -f config/crd/usageprofiles.yaml
+crd-install: ## Install the kubetidy CRDs into the kind cluster
+	kubectl --context kind-$(KIND_CLUSTER) apply -f config/crd/
 
 .PHONY: operator-image
 operator-image: ## Build the operator image for the local Linux arch and load it into Docker
@@ -162,10 +176,16 @@ operator-deploy: ## Build, load, and deploy the kubetidy operator into the kind 
 	docker buildx build --platform $(LOCAL_PLATFORM) --load \
 		-t $(OPERATOR_IMAGE):$(OPERATOR_TAG) -f hack/operator/Dockerfile .
 	kind load docker-image $(OPERATOR_IMAGE):$(OPERATOR_TAG) --name $(KIND_CLUSTER)
-	kubectl --context kind-$(KIND_CLUSTER) apply -f config/crd/usageprofiles.yaml
+	kubectl --context kind-$(KIND_CLUSTER) apply -f config/crd/
 	kubectl --context kind-$(KIND_CLUSTER) apply -f config/operator/operator.yaml
 	kubectl --context kind-$(KIND_CLUSTER) -n kubetidy-system rollout status deployment/kubetidy-operator --timeout=120s
 	@echo "Operator running. Give it a few minutes to accumulate history; scans then run at Tier 0 (operator) with no Prometheus."
+
+.PHONY: operator-undeploy
+operator-undeploy: ## Remove the operator + CRDs from the kind cluster (inverse of operator-deploy)
+	-kubectl --context kind-$(KIND_CLUSTER) delete -f config/operator/operator.yaml --ignore-not-found
+	-kubectl --context kind-$(KIND_CLUSTER) delete -f config/crd/ --ignore-not-found
+	@echo "Operator and CRDs removed from kind."
 
 .PHONY: demo-scan
 demo-scan: build ## Run a scan against the demo namespace in the kind cluster

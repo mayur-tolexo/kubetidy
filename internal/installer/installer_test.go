@@ -27,11 +27,25 @@ func TestDecodeObjectsCRD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decodeObjects(CRD) error: %v", err)
 	}
-	if len(objs) != 1 {
-		t.Fatalf("CRD manifest decoded to %d objects, want 1", len(objs))
+	// All three kubetidy CRDs are embedded and applied together.
+	if len(objs) != 3 {
+		t.Fatalf("CRD manifest decoded to %d objects, want 3", len(objs))
 	}
-	if objs[0].GetKind() != "CustomResourceDefinition" {
-		t.Errorf("kind = %q, want CustomResourceDefinition", objs[0].GetKind())
+	names := map[string]bool{}
+	for _, o := range objs {
+		if o.GetKind() != "CustomResourceDefinition" {
+			t.Errorf("kind = %q, want CustomResourceDefinition", o.GetKind())
+		}
+		names[o.GetName()] = true
+	}
+	for _, want := range []string{
+		"usageprofiles.kubetidy.io",
+		"clusterusagesummaries.kubetidy.io",
+		"recommendations.kubetidy.io",
+	} {
+		if !names[want] {
+			t.Errorf("CRD manifest missing %s", want)
+		}
 	}
 }
 
