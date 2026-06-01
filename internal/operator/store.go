@@ -29,10 +29,12 @@ type dynamicStore struct {
 }
 
 // ProfileStore is the full persistence surface the dynamic store provides: UsageProfile
-// reads/writes (Store) plus the ClusterUsageSummary rollup (SummaryWriter).
+// reads/writes (Store), the ClusterUsageSummary rollup (SummaryWriter), and per-workload
+// Recommendation CRDs (RecommendationWriter).
 type ProfileStore interface {
 	Store
 	SummaryWriter
+	RecommendationWriter
 }
 
 // NewDynamicStore builds a dynamic-client-backed ProfileStore.
@@ -118,6 +120,47 @@ func (s *dynamicStore) SaveSummary(ctx context.Context, status v1alpha1.ClusterU
 	existing.Object["status"] = u.Object["status"]
 	if _, err := res.UpdateStatus(ctx, existing, metav1.UpdateOptions{}); err != nil {
 		return fmt.Errorf("operator: update cluster summary status: %w", err)
+	}
+	return nil
+}
+
+// SaveRecommendation upserts a per-workload Recommendation (spec + status). It satisfies the
+// RecommendationWriter interface. The object carries both spec and status, so create writes
+// the spec and a follow-up status update writes the scored result.
+func (s *dynamicStore) SaveRecommendation(ctx context.Context, rec v1alpha1.Recommendation) error {
+	res := s.client.Resource(v1alpha1.RecommendationGVR).Namespace(rec.Namespace)
+
+	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&rec)
+	if err != nil {
+		return fmt.Errorf("operator: encoding recommendation %s/%s: %w", rec.Namespace, rec.Name, err)
+	}
+	u := &unstructured.Unstructured{Object: obj}
+
+	existing, err := res.Get(ctx, rec.Name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		created, cerr := res.Create(ctx, u, metav1.CreateOptions{})
+		if cerr != nil {
+			return fmt.Errorf("operator: create recommendation %s/%s: %w", rec.Namespace, rec.Name, cerr)
+		}
+		created.Object["status"] = u.Object["status"]
+		if _, uerr := res.UpdateStatus(ctx, created, metav1.UpdateOptions{}); uerr != nil {
+			return fmt.Errorf("operator: set recommendation status %s/%s: %w", rec.Namespace, rec.Name, uerr)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("operator: get-before-update recommendation %s/%s: %w", rec.Namespace, rec.Name, err)
+	}
+
+	// Update spec (resourceVersion carried), then status.
+	u.SetResourceVersion(existing.GetResourceVersion())
+	updated, uerr := res.Update(ctx, u, metav1.UpdateOptions{})
+	if uerr != nil {
+		return fmt.Errorf("operator: update recommendation %s/%s: %w", rec.Namespace, rec.Name, uerr)
+	}
+	updated.Object["status"] = u.Object["status"]
+	if _, serr := res.UpdateStatus(ctx, updated, metav1.UpdateOptions{}); serr != nil {
+		return fmt.Errorf("operator: update recommendation status %s/%s: %w", rec.Namespace, rec.Name, serr)
 	}
 	return nil
 }

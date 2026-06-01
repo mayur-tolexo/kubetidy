@@ -3,14 +3,18 @@ package operator
 import (
 	"context"
 	"testing"
+	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	metricsfake "k8s.io/metrics/pkg/client/clientset/versioned/fake"
 
+	"github.com/kubetidy/kubetidy/api/v1alpha1"
 	"github.com/kubetidy/kubetidy/internal/apis/usageprofile"
+	"github.com/kubetidy/kubetidy/internal/histogram"
 	"github.com/kubetidy/kubetidy/internal/model"
 )
 
@@ -18,6 +22,8 @@ func newDynamicFake(objs ...runtime.Object) *dynamicfake.FakeDynamicClient {
 	scheme := runtime.NewScheme()
 	gvrToListKind := map[schema.GroupVersionResource]string{
 		usageprofile.GroupVersionResource(): "UsageProfileList",
+		v1alpha1.RecommendationGVR:          "RecommendationList",
+		v1alpha1.ClusterUsageSummaryGVR:     "ClusterUsageSummaryList",
 	}
 	return dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme, gvrToListKind, objs...)
 }
@@ -114,6 +120,101 @@ func TestDynamicStore_SaveUpdatesExisting(t *testing.T) {
 	}
 	if !ok || got.Status.SampleCount != 99 {
 		t.Fatalf("update did not persist, ok=%v profile=%+v", ok, got)
+	}
+}
+
+func sampleRecommendation() v1alpha1.Recommendation {
+	rec := v1alpha1.Recommendation{}
+	rec.SetGroupVersionKind(v1alpha1.GroupVersion.WithKind("Recommendation"))
+	rec.Name = "deployment-web"
+	rec.Namespace = "ns1"
+	rec.Spec = v1alpha1.RecommendationSpec{
+		TargetRef: v1alpha1.TargetRef{Kind: "Deployment", Name: "web"},
+		Namespace: "ns1",
+		Source:    v1alpha1.SourceRules,
+	}
+	rec.Status = v1alpha1.RecommendationStatus{Score: 72, MonthlySavings: 12.5}
+	return rec
+}
+
+func TestDynamicStore_SaveRecommendationCreates(t *testing.T) {
+	client := newDynamicFake()
+	store := NewDynamicStore(client)
+
+	if err := store.SaveRecommendation(context.Background(), sampleRecommendation()); err != nil {
+		t.Fatalf("SaveRecommendation (create): %v", err)
+	}
+
+	got, err := client.Resource(v1alpha1.RecommendationGVR).Namespace("ns1").
+		Get(context.Background(), "deployment-web", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Get after create: %v", err)
+	}
+	spec, _, _ := unstructured.NestedMap(got.Object, "spec")
+	if spec["source"] != string(v1alpha1.SourceRules) {
+		t.Errorf("spec.source = %v, want rules", spec["source"])
+	}
+}
+
+func TestDynamicStore_SaveRecommendationUpdatesExisting(t *testing.T) {
+	client := newDynamicFake()
+	store := NewDynamicStore(client)
+	ctx := context.Background()
+
+	if err := store.SaveRecommendation(ctx, sampleRecommendation()); err != nil {
+		t.Fatalf("first save: %v", err)
+	}
+
+	updated := sampleRecommendation()
+	updated.Status.MonthlySavings = 99
+	updated.Status.Score = 88
+	if err := store.SaveRecommendation(ctx, updated); err != nil {
+		t.Fatalf("SaveRecommendation (update): %v", err)
+	}
+
+	got, err := client.Resource(v1alpha1.RecommendationGVR).Namespace("ns1").
+		Get(ctx, "deployment-web", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Get after update: %v", err)
+	}
+	status, _, _ := unstructured.NestedMap(got.Object, "status")
+	if status["score"] != int64(88) {
+		t.Errorf("status.score = %v, want 88", status["score"])
+	}
+}
+
+func TestDynamicStore_SaveSummaryCreatesThenUpdates(t *testing.T) {
+	client := newDynamicFake()
+	store := NewDynamicStore(client)
+	ctx := context.Background()
+
+	if err := store.SaveSummary(ctx, v1alpha1.ClusterUsageSummaryStatus{WorkloadCount: 3, EfficiencyScore: 60}); err != nil {
+		t.Fatalf("SaveSummary (create): %v", err)
+	}
+	if err := store.SaveSummary(ctx, v1alpha1.ClusterUsageSummaryStatus{WorkloadCount: 4, EfficiencyScore: 75}); err != nil {
+		t.Fatalf("SaveSummary (update): %v", err)
+	}
+
+	got, err := client.Resource(v1alpha1.ClusterUsageSummaryGVR).Namespace(SummaryNamespace).
+		Get(ctx, SummaryName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Get cluster summary: %v", err)
+	}
+	status, _, _ := unstructured.NestedMap(got.Object, "status")
+	if status["workloadCount"] != int64(4) {
+		t.Errorf("status.workloadCount = %v, want 4", status["workloadCount"])
+	}
+}
+
+func TestWithHistogramConfig_Overrides(t *testing.T) {
+	cpu := histogram.DefaultCPUConfig().WithHalfLife(48 * time.Hour)
+	mem := histogram.DefaultMemoryConfig().WithHalfLife(72 * time.Hour)
+	c := NewCollector(&fakeLister{}, &fakeSampler{}, newFakeStore(), nil).WithHistogramConfig(cpu, mem)
+	if c.cpuCfg.HalfLife != 48*time.Hour {
+		t.Errorf("cpu half-life = %v, want 48h", c.cpuCfg.HalfLife)
+	}
+	if c.memCfg.HalfLife != 72*time.Hour {
+		t.Errorf("mem half-life = %v, want 72h", c.memCfg.HalfLife)
 	}
 }
 
