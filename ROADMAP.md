@@ -50,9 +50,14 @@ This roadmap is intentionally public and open for discussion — please weigh in
       binary; no manual `kubectl apply`.
 - [ ] Guarded `apply` with auto-rollback on SLO regression
 - [x] Tier 2: OpenCost integration for precise allocated cost (auto-detected, or `--opencost-url`)
+- [x] **Recommendation CRDs** — the operator writes a per-workload `Recommendation` (the LLM
+      target; rules-engine source today). Multi-cluster aggregation still to come.
+- [x] **Confidence that grows with data** — recommendations are graded low/med/high and gated
+      on data maturity, so warm-up history isn't passed off as high-confidence.
 - [ ] Accountability: per-team showback + budgets
-- [ ] Recommendation CRDs + multi-cluster aggregation (continuous, in-cluster)
+- [ ] Multi-cluster aggregation (continuous, in-cluster)
 - [ ] Cleanup detectors (orphaned services/PVCs, idle namespaces, zombie workloads)
+- [ ] Interactive `scan -i` TUI to browse/filter recommendations and drill into `--explain`
 
 ## 💼 Commercial (open-core)
 

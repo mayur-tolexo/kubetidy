@@ -289,8 +289,11 @@ func TestSelectUsageProviderPrefersOperatorWhenProfilesExist(t *testing.T) {
 	if p.Name() != "kubetidy operator" {
 		t.Errorf("provider = %q, want kubetidy operator (Tier 0)", p.Name())
 	}
-	if !strings.Contains(strings.Join(warnings, " "), "operator history") {
-		t.Errorf("warnings = %v, want an operator-history note", warnings)
+	// No blanket note is emitted for the operator: the data banner states the tier and the
+	// per-recommendation evidence shows any snapshot fallback, so a "using operator" note would
+	// overclaim during warm-up.
+	if strings.Contains(strings.Join(warnings, " "), "operator") {
+		t.Errorf("did not expect an operator note, got %v", warnings)
 	}
 }
 

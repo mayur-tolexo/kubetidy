@@ -64,3 +64,22 @@ func TestDefaultPolicy(t *testing.T) {
 		t.Error("default policy should be downsize-only on snapshot data")
 	}
 }
+
+func TestConfidenceBand(t *testing.T) {
+	cases := []struct {
+		score float64
+		want  ConfidenceBand
+	}{
+		{0.05, ConfidenceLow},
+		{0.59, ConfidenceLow},
+		{0.60, ConfidenceMedium},
+		{0.79, ConfidenceMedium},
+		{0.80, ConfidenceHigh},
+		{0.99, ConfidenceHigh},
+	}
+	for _, c := range cases {
+		if got := (Confidence{Score: c.score}).Band(); got != c.want {
+			t.Errorf("Band(%.2f) = %q, want %q", c.score, got, c.want)
+		}
+	}
+}
