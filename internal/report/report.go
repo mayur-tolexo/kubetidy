@@ -102,8 +102,13 @@ func writeBanner(b *strings.Builder, result model.ScanResult, opts Options) {
 		ctx = "(no context)"
 	}
 	banner := fmt.Sprintf("kubetidy · %s  ·  data: %s", ctx, result.Tier.String())
+	// Window + typical sample count are uniform across a scan, so state them ONCE here rather
+	// than repeating on every row. Exact per-workload samples live in --explain.
 	if w := observedWindow(result); w > 0 {
-		banner += fmt.Sprintf("  ·  observed over %s", formatWindow(w))
+		banner += fmt.Sprintf("  ·  %s history", formatWindow(w))
+		if s := typicalSamples(result); s > 0 {
+			banner += fmt.Sprintf(", ~%s samples/workload", formatCount(s))
+		}
 	}
 	if opts.Color {
 		fmt.Fprintf(b, "%s%s%s\n", ansiBold+ansiCyan, banner, ansiReset)
@@ -165,7 +170,7 @@ func writeRecommendations(b *strings.Builder, recs []model.Recommendation, opts 
 	var buf strings.Builder
 	tw := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
 	// Flushing to an in-memory strings.Builder cannot fail.
-	_, _ = fmt.Fprintf(tw, "  WORKLOAD\tREQUESTED\tUSES (cpu p95 · mem peak)\tPROPOSED\tSAVE\tCONF (samples)\n")
+	_, _ = fmt.Fprintf(tw, "  WORKLOAD\tREQUESTED\tUSES\tPROPOSED\tSAVE\tCONF\n")
 	for _, rec := range recs {
 		_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\n",
 			workloadLabel(rec),
@@ -198,9 +203,9 @@ func writeRecommendations(b *strings.Builder, recs []model.Recommendation, opts 
 // writeLegend emits the short column/confidence legend footer.
 func writeLegend(b *strings.Builder, opts Options) {
 	lines := []string{
-		"values are cpu/mem · USES (p95 cpu / peak mem) is what PROPOSED is sized to · SAVE = $/mo (↑ grow = reliability)",
-		"CONF = confidence ▒ low · ▓ med · █ high (score% · samples) — grows with data history.",
-		"→ run  kubetidy scan --explain <workload>  to see the full usage distribution (avg/p95/p99/peak).",
+		"values are cpu/mem · USES = p95 cpu / peak mem (what PROPOSED is sized to) · SAVE = $/mo (↑ grow = reliability)",
+		"CONF = confidence ▒ low · ▓ med · █ high + score% — grows with data history (window/samples shown above).",
+		"→ run  kubetidy scan --explain <workload>  for the full usage distribution + exact sample count.",
 	}
 	for _, l := range lines {
 		if opts.Color {
@@ -261,13 +266,7 @@ func confidenceCell(rec model.Recommendation) string {
 	default:
 		glyph, label = "▒", "low"
 	}
-	cell := fmt.Sprintf("%s %s %d%%", glyph, label, rec.Confidence.Percent())
-	// Append the sample count backing this recommendation — the data provenance the confidence
-	// is built on, so a "low" reads as "low, because only N samples so far".
-	if n := rec.Usage.Samples; n > 0 {
-		cell += fmt.Sprintf(" · %s smp", formatCount(n))
-	}
-	return cell
+	return fmt.Sprintf("%s %s %d%%", glyph, label, rec.Confidence.Percent())
 }
 
 // observedWindow returns the longest observation window across the recommendations — the
@@ -280,6 +279,22 @@ func observedWindow(result model.ScanResult) time.Duration {
 		}
 	}
 	return longest
+}
+
+// typicalSamples returns the median sample count across recommendations — a representative
+// "samples per workload" for the banner, robust to the odd multi-pod outlier. 0 when unknown.
+func typicalSamples(result model.ScanResult) int64 {
+	counts := make([]int64, 0, len(result.Recommendations))
+	for _, r := range result.Recommendations {
+		if r.Usage.Samples > 0 {
+			counts = append(counts, r.Usage.Samples)
+		}
+	}
+	if len(counts) == 0 {
+		return 0
+	}
+	sort.Slice(counts, func(i, j int) bool { return counts[i] < counts[j] })
+	return counts[len(counts)/2]
 }
 
 // JSON renders a stable machine-readable schema of the scan result.
