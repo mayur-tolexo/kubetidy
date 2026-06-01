@@ -64,7 +64,15 @@ func (p *prometheusProvider) Usage(ctx context.Context, w model.Workload) (map[s
 	if err != nil {
 		return nil, err
 	}
+	cpuP99, err := p.queryVector(ctx, cpuQuery(0.99, w.Namespace, regex, p.window))
+	if err != nil {
+		return nil, err
+	}
 	cpuMax, err := p.queryVector(ctx, cpuMaxQuery(w.Namespace, regex, p.window))
+	if err != nil {
+		return nil, err
+	}
+	cpuAvg, err := p.queryVector(ctx, cpuAvgQuery(w.Namespace, regex, p.window))
 	if err != nil {
 		return nil, err
 	}
@@ -76,12 +84,29 @@ func (p *prometheusProvider) Usage(ctx context.Context, w model.Workload) (map[s
 	if err != nil {
 		return nil, err
 	}
+	memP99, err := p.queryVector(ctx, memQuery(0.99, w.Namespace, regex, p.window))
+	if err != nil {
+		return nil, err
+	}
 	memMax, err := p.queryVector(ctx, memMaxQuery(w.Namespace, regex, p.window))
 	if err != nil {
 		return nil, err
 	}
+	memAvg, err := p.queryVector(ctx, memAvgQuery(w.Namespace, regex, p.window))
+	if err != nil {
+		return nil, err
+	}
 
-	return mergeResults(window, cpuP50, cpuP95, cpuMax, memP50, memP95, memMax), nil
+	return mergeResults(window, results{
+		cpuAvg: cpuAvg, cpuP50: cpuP50, cpuP95: cpuP95, cpuP99: cpuP99, cpuMax: cpuMax,
+		memAvg: memAvg, memP50: memP50, memP95: memP95, memP99: memP99, memMax: memMax,
+	}), nil
+}
+
+// results bundles the per-metric query vectors so mergeResults stays readable as the set grows.
+type results struct {
+	cpuAvg, cpuP50, cpuP95, cpuP99, cpuMax prommodel.Vector
+	memAvg, memP50, memP95, memP99, memMax prommodel.Vector
 }
 
 // queryVector runs an instant query and returns the resulting vector. Query warnings are
@@ -99,8 +124,8 @@ func (p *prometheusProvider) queryVector(ctx context.Context, query string) (pro
 	return vec, nil
 }
 
-// mergeResults groups the six metric vectors by their "container" label into UsageStats.
-func mergeResults(window time.Duration, cpuP50, cpuP95, cpuMax, memP50, memP95, memMax prommodel.Vector) map[string]model.UsageStats {
+// mergeResults groups the per-metric vectors by their "container" label into UsageStats.
+func mergeResults(window time.Duration, r results) map[string]model.UsageStats {
 	stats := make(map[string]*model.UsageStats)
 
 	apply := func(vec prommodel.Vector, set func(s *model.UsageStats, v float64)) {
@@ -122,12 +147,16 @@ func mergeResults(window time.Duration, cpuP50, cpuP95, cpuMax, memP50, memP95, 
 		}
 	}
 
-	apply(cpuP50, func(s *model.UsageStats, v float64) { s.CPUMillicores.P50 = v })
-	apply(cpuP95, func(s *model.UsageStats, v float64) { s.CPUMillicores.P95 = v })
-	apply(cpuMax, func(s *model.UsageStats, v float64) { s.CPUMillicores.Max = v })
-	apply(memP50, func(s *model.UsageStats, v float64) { s.MemoryBytes.P50 = v })
-	apply(memP95, func(s *model.UsageStats, v float64) { s.MemoryBytes.P95 = v })
-	apply(memMax, func(s *model.UsageStats, v float64) { s.MemoryBytes.Max = v })
+	apply(r.cpuAvg, func(s *model.UsageStats, v float64) { s.CPUMillicores.Avg = v })
+	apply(r.cpuP50, func(s *model.UsageStats, v float64) { s.CPUMillicores.P50 = v })
+	apply(r.cpuP95, func(s *model.UsageStats, v float64) { s.CPUMillicores.P95 = v })
+	apply(r.cpuP99, func(s *model.UsageStats, v float64) { s.CPUMillicores.P99 = v })
+	apply(r.cpuMax, func(s *model.UsageStats, v float64) { s.CPUMillicores.Max = v })
+	apply(r.memAvg, func(s *model.UsageStats, v float64) { s.MemoryBytes.Avg = v })
+	apply(r.memP50, func(s *model.UsageStats, v float64) { s.MemoryBytes.P50 = v })
+	apply(r.memP95, func(s *model.UsageStats, v float64) { s.MemoryBytes.P95 = v })
+	apply(r.memP99, func(s *model.UsageStats, v float64) { s.MemoryBytes.P99 = v })
+	apply(r.memMax, func(s *model.UsageStats, v float64) { s.MemoryBytes.Max = v })
 
 	// Samples: estimate the number of scrapes covered by the window at the inner
 	// resolution. This is a coarse lower bound (one series, one scrape per resolution
@@ -174,6 +203,22 @@ func memQuery(quantile float64, namespace, podRegex, window string) string {
 func memMaxQuery(namespace, podRegex, window string) string {
 	return fmt.Sprintf(
 		`max_over_time(container_memory_working_set_bytes{namespace="%s",pod=~"%s",container!="",container!="POD"}[%s])`,
+		namespace, podRegex, window,
+	)
+}
+
+// cpuAvgQuery builds a millicores avg-over-time query for CPU usage.
+func cpuAvgQuery(namespace, podRegex, window string) string {
+	return fmt.Sprintf(
+		`avg_over_time(rate(container_cpu_usage_seconds_total{namespace="%s",pod=~"%s",container!="",container!="POD"}[%s])[%s:%s]) * 1000`,
+		namespace, podRegex, resolution, window, resolution,
+	)
+}
+
+// memAvgQuery builds a bytes avg-over-time query for memory working set.
+func memAvgQuery(namespace, podRegex, window string) string {
+	return fmt.Sprintf(
+		`avg_over_time(container_memory_working_set_bytes{namespace="%s",pod=~"%s",container!="",container!="POD"}[%s])`,
 		namespace, podRegex, window,
 	)
 }

@@ -50,8 +50,8 @@ func (p *operatorProvider) Usage(ctx context.Context, w model.Workload) (map[str
 	out := make(map[string]model.UsageStats, len(profile.Status.Containers))
 	for _, c := range profile.Status.Containers {
 		out[c.Name] = model.UsageStats{
-			CPUMillicores: model.Percentiles{P50: c.CPU.P50, P95: c.CPU.P95, Max: c.CPU.Max},
-			MemoryBytes:   model.Percentiles{P50: c.Memory.P50, P95: c.Memory.P95, Max: c.Memory.Max},
+			CPUMillicores: model.Percentiles{Avg: c.CPU.Avg, P50: c.CPU.P50, P95: c.CPU.P95, P99: c.CPU.P99, Max: c.CPU.Max},
+			MemoryBytes:   model.Percentiles{Avg: c.Memory.Avg, P50: c.Memory.P50, P95: c.Memory.P95, P99: c.Memory.P99, Max: c.Memory.Max},
 			Window:        window,
 			Samples:       profile.Status.SampleCount,
 			Tier:          model.TierOperator,

@@ -105,8 +105,13 @@ type UsageStats struct {
 
 // Percentiles holds summary statistics for a single metric over the window.
 type Percentiles struct {
+	// Avg is the mean observed value (0 when unknown). Shown alongside the percentiles so a
+	// user can see typical-vs-peak at a glance.
+	Avg float64
 	P50 float64
 	P95 float64
+	// P99 is the 99th-percentile observed value (0 when unknown).
+	P99 float64
 	Max float64
 	// CV is the coefficient of variation (stddev/mean), used by the confidence model.
 	// Zero when unknown.
@@ -216,6 +221,10 @@ type Recommendation struct {
 	MonthlySavings float64
 	Confidence     Confidence
 	Tier           EvidenceTier
+	// Usage is the observed usage distribution this recommendation was derived from (avg / P50 /
+	// P95 / P99 / peak per metric, plus window + samples). Carried so consumers can show the
+	// "why" — what was requested vs what is actually used — not just the summary string.
+	Usage UsageStats
 	// Evidence is a short human-readable justification (e.g. "P95 cpu 280m, max mem 0.9Gi
 	// over 14d · 1.2M samples").
 	Evidence string

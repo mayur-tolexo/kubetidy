@@ -125,7 +125,7 @@ func TestMergeResults(t *testing.T) {
 	memP95 := prommodel.Vector{sample("api", 800e6)}
 	memMax := prommodel.Vector{sample("api", 900e6)}
 
-	got := mergeResults(window, cpuP50, cpuP95, cpuMax, memP50, memP95, memMax)
+	got := mergeResults(window, results{cpuP50: cpuP50, cpuP95: cpuP95, cpuMax: cpuMax, memP50: memP50, memP95: memP95, memMax: memMax})
 
 	api, ok := got["api"]
 	if !ok {
@@ -171,7 +171,7 @@ func TestMergeResultsSkipsEmptyContainerLabel(t *testing.T) {
 		sample("", 42),
 		sample("real", 7),
 	}
-	got := mergeResults(time.Hour, vec, nil, nil, nil, nil, nil)
+	got := mergeResults(time.Hour, results{cpuP50: vec})
 	if len(got) != 1 {
 		t.Fatalf("got %d containers, want 1: %+v", len(got), got)
 	}

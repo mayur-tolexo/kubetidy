@@ -86,6 +86,10 @@ spec:
                     cpu:
                       description: CPU is the CPU usage history (millicores).
                       properties:
+                        avg:
+                          description: Avg is the mean observed value (CPU in millicores,
+                            memory in bytes).
+                          type: number
                         histogram:
                           description: |-
                             Histogram is the base64-encoded decaying-histogram snapshot, so the operator can resume
@@ -100,6 +104,9 @@ spec:
                           type: number
                         p95:
                           description: P95 is the 95th-percentile observed value.
+                          type: number
+                        p99:
+                          description: P99 is the 99th-percentile observed value.
                           type: number
                       required:
                       - max
@@ -109,6 +116,10 @@ spec:
                     memory:
                       description: Memory is the memory usage history (bytes).
                       properties:
+                        avg:
+                          description: Avg is the mean observed value (CPU in millicores,
+                            memory in bytes).
+                          type: number
                         histogram:
                           description: |-
                             Histogram is the base64-encoded decaying-histogram snapshot, so the operator can resume
@@ -123,6 +134,9 @@ spec:
                           type: number
                         p95:
                           description: P95 is the 95th-percentile observed value.
+                          type: number
+                        p99:
+                          description: P99 is the 99th-percentile observed value.
                           type: number
                       required:
                       - max

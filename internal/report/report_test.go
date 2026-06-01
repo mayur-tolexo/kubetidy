@@ -37,8 +37,13 @@ func fixture() model.ScanResult {
 				MonthlySavings: 210,
 				Confidence:     model.Confidence{Score: 0.96, Reason: "tier 1, 14d, low variance"},
 				Tier:           model.TierHistorical,
-				Evidence:       "P95 cpu 280m, max mem 0.9Gi over 14d · 1.2M samples",
-				Explanation:    []string{"cpu request = P95 280m + 15% headroom = 322m -> 320m", "mem request = max 0.9Gi + 15% headroom"},
+				Usage: model.UsageStats{
+					CPUMillicores: model.Percentiles{Avg: 200, P50: 250, P95: 280, P99: 300, Max: 350},
+					MemoryBytes:   model.Percentiles{Avg: 700 * mib, P50: 720 * mib, P95: 820 * mib, P99: 870 * mib, Max: 0.9 * gib},
+					Window:        14 * 24 * time.Hour, Samples: 1_200_000, Tier: model.TierHistorical,
+				},
+				Evidence:    "p95 cpu 280m, peak mem 0.9Gi over 14d · 1.2M samples",
+				Explanation: []string{"cpu request = P95 280m + 15% headroom = 322m -> 320m", "mem request = max 0.9Gi + 15% headroom"},
 			},
 		},
 		EfficiencyScore:   41,
@@ -149,8 +154,8 @@ func TestTableRecommendationRow(t *testing.T) {
 	}
 	out := buf.String()
 
-	// Header columns are present.
-	for _, col := range []string{"WORKLOAD", "CPU", "MEM", "SAVINGS", "CONF"} {
+	// Header columns are present (REQUESTED → USES → PROPOSED story).
+	for _, col := range []string{"WORKLOAD", "REQUESTED", "USES", "PROPOSED", "SAVE", "CONF"} {
 		if !strings.Contains(out, col) {
 			t.Errorf("missing column header %q\n--- got ---\n%s", col, out)
 		}
@@ -162,12 +167,16 @@ func TestTableRecommendationRow(t *testing.T) {
 	if strings.Contains(out, "search-api") {
 		t.Errorf("TopN=1 should truncate lower rec\n--- got ---\n%s", out)
 	}
-	if !strings.Contains(out, "2000m → 320m") {
-		t.Errorf("missing cpu transition\n--- got ---\n%s", out)
+	// REQUESTED cpu/mem and PROPOSED cpu/mem cells (4Gi -> ~1.1Gi adaptive memory).
+	if !strings.Contains(out, "2000m/4Gi") {
+		t.Errorf("missing requested cell\n--- got ---\n%s", out)
 	}
-	// 4Gi -> ~1.1Gi adaptive memory.
-	if !strings.Contains(out, "4Gi → 1.1Gi") {
-		t.Errorf("missing adaptive mem transition\n--- got ---\n%s", out)
+	if !strings.Contains(out, "320m/1.1Gi") {
+		t.Errorf("missing proposed cell\n--- got ---\n%s", out)
+	}
+	// USES shows the p95 cpu / peak mem the proposal is sized to (fixture p95=280m).
+	if !strings.Contains(out, "280m/") {
+		t.Errorf("missing uses cell\n--- got ---\n%s", out)
 	}
 	if !strings.Contains(out, "$210/mo") {
 		t.Errorf("missing savings\n--- got ---\n%s", out)
@@ -175,9 +184,10 @@ func TestTableRecommendationRow(t *testing.T) {
 	if !strings.Contains(out, "█ high") {
 		t.Errorf("missing confidence band\n--- got ---\n%s", out)
 	}
-	// Evidence is indented under the row with the └ marker.
-	if !strings.Contains(out, "    └ P95 cpu 280m") {
-		t.Errorf("missing indented evidence line\n--- got ---\n%s", out)
+	// The table is one clean line per workload — the dense per-row evidence line was removed
+	// (it now lives under --explain), so it must NOT appear here.
+	if strings.Contains(out, "└") {
+		t.Errorf("table should not render a per-row evidence line\n--- got ---\n%s", out)
 	}
 }
 
@@ -192,7 +202,8 @@ func TestTableAdaptiveMemoryNeverZeroGi(t *testing.T) {
 	if strings.Contains(out, "0.0Gi") {
 		t.Errorf("must never print 0.0Gi\n--- got ---\n%s", out)
 	}
-	if !strings.Contains(out, "512Mi → 170Mi") {
+	// 512Mi (requested) and 170Mi (proposed) render in Mi across the cpu/mem cells.
+	if !strings.Contains(out, "512Mi") || !strings.Contains(out, "170Mi") {
 		t.Errorf("missing sub-Gi adaptive mem rendering\n--- got ---\n%s", out)
 	}
 }
@@ -295,7 +306,7 @@ func TestTableExplainMatch(t *testing.T) {
 	if !strings.Contains(out, "Deployment/default/checkout-api") {
 		t.Errorf("explain should render headline ref\n--- got ---\n%s", out)
 	}
-	if !strings.Contains(out, "derivation:") {
+	if !strings.Contains(out, "derivation") {
 		t.Errorf("explain should render derivation\n--- got ---\n%s", out)
 	}
 	// Should NOT render the summary table.
@@ -324,14 +335,19 @@ func TestExplain(t *testing.T) {
 	out := buf.String()
 	checks := []string{
 		"Deployment/default/checkout-api  ·  container: checkout-api",
-		"change:",
-		"cpu:  2000m → 320m",
-		"mem:  4Gi → 1.1Gi",
-		"savings:  $210 / month",
-		"confidence:  high (96%) — tier 1, 14d, low variance",
-		"tier:  1 (Prometheus)",
-		"evidence:  P95 cpu 280m",
-		"derivation:",
+		"why this recommendation",
+		"requested",
+		"cpu 2000m",
+		"observed",
+		"280m", // p95 in the distribution table
+		"proposed",
+		"cpu 320m",
+		"over-allocated on cpu", // verdict
+		"savings",
+		"$210 / month",
+		"high (96%) — tier 1, 14d, low variance",
+		"1 (Prometheus)",
+		"derivation",
 		"cpu request = P95 280m",
 	}
 	for _, c := range checks {
@@ -349,7 +365,7 @@ func TestExplainNegativeSavings(t *testing.T) {
 		t.Fatalf("Explain: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "savings:  -$45 / month") {
+	if !strings.Contains(out, "-$45 / month") {
 		t.Errorf("expected signed negative savings\n--- got ---\n%s", out)
 	}
 	if !strings.Contains(out, "grow for reliability") {

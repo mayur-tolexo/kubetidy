@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/kubetidy/kubetidy/internal/model"
 )
@@ -161,12 +162,13 @@ func writeRecommendations(b *strings.Builder, recs []model.Recommendation, opts 
 	var buf strings.Builder
 	tw := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
 	// Flushing to an in-memory strings.Builder cannot fail.
-	_, _ = fmt.Fprintf(tw, "  WORKLOAD\tCPU\tMEM\tSAVINGS\tCONF\n")
+	_, _ = fmt.Fprintf(tw, "  WORKLOAD\tREQUESTED\tUSES\tPROPOSED\tSAVE\tCONF\n")
 	for _, rec := range recs {
-		_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n",
+		_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\n",
 			workloadLabel(rec),
-			cpuTransition(rec),
-			memTransition(rec),
+			requestedCell(rec),
+			usesCell(rec),
+			proposedCell(rec),
 			savingsCell(rec),
 			confidenceCell(rec),
 		)
@@ -181,16 +183,11 @@ func writeRecommendations(b *strings.Builder, recs []model.Recommendation, opts 
 			b.WriteString(lines[0] + "\n")
 		}
 	}
-	for i, rec := range recs {
+	// One clean line per workload — no per-row evidence sub-line (it turned the table into a
+	// wall of text). The full usage distribution lives in `--explain <workload>`.
+	for i := range recs {
 		if i+1 < len(lines) {
 			b.WriteString(lines[i+1] + "\n")
-		}
-		if rec.Evidence != "" {
-			if opts.Color {
-				fmt.Fprintf(b, "    %s└ %s%s\n", ansiDim, rec.Evidence, ansiReset)
-			} else {
-				fmt.Fprintf(b, "    └ %s\n", rec.Evidence)
-			}
 		}
 	}
 }
@@ -198,8 +195,9 @@ func writeRecommendations(b *strings.Builder, recs []model.Recommendation, opts 
 // writeLegend emits the short column/confidence legend footer.
 func writeLegend(b *strings.Builder, opts Options) {
 	lines := []string{
-		"CPU/MEM = current → proposed request · SAVINGS = $/mo (↑ grow = reliability, not a saving)",
-		"CONF = confidence: ▒ low · ▓ med · █ high — grows with data history (tier, window, samples). --explain shows the %.",
+		"columns are cpu/mem · USES = p95 cpu / peak mem (what PROPOSED is sized to) · SAVE = $/mo (↑ grow = reliability)",
+		"CONF = confidence: ▒ low · ▓ med · █ high — grows with data history (tier, window, samples).",
+		"→ run  kubetidy scan --explain <workload>  to see the full usage distribution (avg/p95/p99/peak).",
 	}
 	for _, l := range lines {
 		if opts.Color {
@@ -210,21 +208,34 @@ func writeLegend(b *strings.Builder, opts Options) {
 	}
 }
 
-// cpuTransition renders the CPU request change, e.g. "2000m → 320m".
-func cpuTransition(rec model.Recommendation) string {
-	return fmt.Sprintf("%dm → %dm", rec.Current.Requests.CPUMillicores, rec.Proposed.Requests.CPUMillicores)
+// requestedCell / usesCell / proposedCell render the three columns that tell the reduction's
+// story left-to-right as "cpu/mem": what the workload ASKS for, what it actually USES (the p95
+// cpu / peak mem the new request is sized to), and what we PROPOSE. Seeing requested ≫ uses is
+// the at-a-glance "why" behind every recommendation.
+func requestedCell(rec model.Recommendation) string {
+	return cpuMemPair(float64(rec.Current.Requests.CPUMillicores), rec.Current.Requests.MemoryBytes)
 }
 
-// memTransition renders the memory request change with adaptive Mi/Gi units, e.g.
-// "4Gi → 1.1Gi" or "512Mi → 170Mi".
-func memTransition(rec model.Recommendation) string {
-	return fmt.Sprintf("%s → %s",
-		formatMem(rec.Current.Requests.MemoryBytes),
-		formatMem(rec.Proposed.Requests.MemoryBytes),
-	)
+func usesCell(rec model.Recommendation) string {
+	cpu := rec.Usage.CPUMillicores.P95 // CPU is sized to p95
+	mem := rec.Usage.MemoryBytes.Max   // memory is sized to peak (OOM-safe)
+	if cpu <= 0 && mem <= 0 {
+		return "—" // usage not available (e.g. profile not populated yet)
+	}
+	return cpuMemPair(cpu, int64(mem+0.5))
 }
 
-// savingsCell renders the SAVINGS column. A positive saving reads "$210/mo". A negative
+func proposedCell(rec model.Recommendation) string {
+	return cpuMemPair(float64(rec.Proposed.Requests.CPUMillicores), rec.Proposed.Requests.MemoryBytes)
+}
+
+// cpuMemPair renders a "cpu/mem" pair compactly, e.g. "2000m/4Gi" or "13m/147Mi". CPU stays in
+// millicores (never folded to "cores") so the columns line up and read uniformly.
+func cpuMemPair(cpuMillis float64, memBytes int64) string {
+	return fmt.Sprintf("%s/%s", cpuMilli(cpuMillis), formatMem(memBytes))
+}
+
+// savingsCell renders the SAVE column. A positive saving reads "$210/mo". A negative
 // saving means the workload is under-provisioned and should GROW for reliability, so it is
 // shown distinctly with an up marker and a "(grow)" tag rather than as a saving.
 func savingsCell(rec model.Recommendation) string {
@@ -268,26 +279,31 @@ func JSON(w io.Writer, result model.ScanResult) error {
 func Explain(w io.Writer, rec model.Recommendation) error {
 	var b strings.Builder
 
-	fmt.Fprintf(&b, "%s  ·  container: %s\n", rec.Workload.Ref(), rec.ContainerName)
-	b.WriteString("\n")
-	fmt.Fprintf(&b, "  change:\n")
-	fmt.Fprintf(&b, "    cpu:  %dm → %dm\n", rec.Current.Requests.CPUMillicores, rec.Proposed.Requests.CPUMillicores)
-	fmt.Fprintf(&b, "    mem:  %s → %s\n", formatMem(rec.Current.Requests.MemoryBytes), formatMem(rec.Proposed.Requests.MemoryBytes))
-	b.WriteString("\n")
-	if rec.MonthlySavings < 0 {
-		fmt.Fprintf(&b, "  savings:  %s / month  (grow for reliability — costs more, not a saving)\n", formatSignedDollars(rec.MonthlySavings))
-	} else {
-		fmt.Fprintf(&b, "  savings:  %s / month\n", formatSignedDollars(rec.MonthlySavings))
-	}
-	fmt.Fprintf(&b, "  confidence:  %s (%d%%) — %s\n", rec.Confidence.Band(), rec.Confidence.Percent(), rec.Confidence.Reason)
-	fmt.Fprintf(&b, "  tier:  %s\n", rec.Tier.String())
-	if rec.Evidence != "" {
-		fmt.Fprintf(&b, "  evidence:  %s\n", rec.Evidence)
+	fmt.Fprintf(&b, "%s  ·  container: %s\n\n", rec.Workload.Ref(), rec.ContainerName)
+
+	// The "why" block: requested vs actually-observed vs proposed, then the verdict. This is
+	// what earns trust — it shows we cut to fit real usage, not an arbitrary number.
+	b.WriteString("  why this recommendation\n")
+	fmt.Fprintf(&b, "    requested   cpu %s   ·   mem %s\n",
+		cpuMilli(float64(rec.Current.Requests.CPUMillicores)), formatMem(rec.Current.Requests.MemoryBytes))
+	writeObserved(&b, rec.Usage)
+	fmt.Fprintf(&b, "    proposed    cpu %s   ·   mem %s\n",
+		cpuMilli(float64(rec.Proposed.Requests.CPUMillicores)), formatMem(rec.Proposed.Requests.MemoryBytes))
+	if v := verdict(rec); v != "" {
+		fmt.Fprintf(&b, "    verdict     %s\n", v)
 	}
 
+	b.WriteString("\n")
+	if rec.MonthlySavings < 0 {
+		fmt.Fprintf(&b, "  savings      %s / month  (grow for reliability — costs more, not a saving)\n", formatSignedDollars(rec.MonthlySavings))
+	} else {
+		fmt.Fprintf(&b, "  savings      %s / month\n", formatSignedDollars(rec.MonthlySavings))
+	}
+	fmt.Fprintf(&b, "  confidence   %s (%d%%) — %s\n", rec.Confidence.Band(), rec.Confidence.Percent(), rec.Confidence.Reason)
+	fmt.Fprintf(&b, "  tier         %s\n", rec.Tier.String())
+
 	if len(rec.Explanation) > 0 {
-		b.WriteString("\n")
-		b.WriteString("  derivation:\n")
+		b.WriteString("\n  derivation\n")
 		for _, line := range rec.Explanation {
 			fmt.Fprintf(&b, "    %s\n", line)
 		}
@@ -295,6 +311,115 @@ func Explain(w io.Writer, rec model.Recommendation) error {
 
 	_, err := io.WriteString(w, b.String())
 	return err
+}
+
+// writeObserved renders the observed-usage block. For a single snapshot there is no
+// distribution, so it shows the one reading; otherwise an aligned avg/p95/p99/peak table.
+func writeObserved(b *strings.Builder, st model.UsageStats) {
+	if st.Tier == model.TierSnapshot {
+		fmt.Fprintf(b, "    observed    single live snapshot · cpu %s · mem %s\n",
+			cpuMilli(st.CPUMillicores.P95), formatMem(int64(st.MemoryBytes.Max+0.5)))
+		return
+	}
+	fmt.Fprintf(b, "    observed    over %s · %s samples\n", formatWindow(st.Window), formatCount(st.Samples))
+
+	var tw strings.Builder
+	t := tabwriter.NewWriter(&tw, 0, 0, 2, ' ', 0)
+	// Leading empty cells indent the block; the header has one extra so avg/p95/... sit over
+	// the values, not over the cpu/mem labels.
+	_, _ = fmt.Fprintf(t, "\t\t\tavg\tp95\tp99\tpeak\n")
+	c := st.CPUMillicores
+	_, _ = fmt.Fprintf(t, "\t\tcpu\t%s\t%s\t%s\t%s\n", distCPU(c.Avg), distCPU(c.P95), distCPU(c.P99), distCPU(c.Max))
+	m := st.MemoryBytes
+	_, _ = fmt.Fprintf(t, "\t\tmem\t%s\t%s\t%s\t%s\n", distMem(m.Avg), distMem(m.P95), distMem(m.P99), distMem(m.Max))
+	_ = t.Flush()
+	b.WriteString(tw.String())
+}
+
+// verdict summarizes how over- (or under-) provisioned the workload is, as a "Nx" factor of
+// current request vs proposed. Empty when neither metric moves meaningfully.
+func verdict(rec model.Recommendation) string {
+	cpuF := factor(float64(rec.Current.Requests.CPUMillicores), float64(rec.Proposed.Requests.CPUMillicores))
+	memF := factor(float64(rec.Current.Requests.MemoryBytes), float64(rec.Proposed.Requests.MemoryBytes))
+	var parts []string
+	if s := factorPhrase("cpu", cpuF); s != "" {
+		parts = append(parts, s)
+	}
+	if s := factorPhrase("mem", memF); s != "" {
+		parts = append(parts, s)
+	}
+	return strings.Join(parts, " · ")
+}
+
+// factor returns current/proposed (>1 = over-allocated, <1 = under), or 0 when not computable.
+func factor(current, proposed float64) float64 {
+	if proposed <= 0 || current <= 0 {
+		return 0
+	}
+	return current / proposed
+}
+
+func factorPhrase(metric string, f float64) string {
+	switch {
+	case f >= 1.5:
+		return fmt.Sprintf("~%.0f× over-allocated on %s", f, metric)
+	case f > 0 && f <= 0.67:
+		return fmt.Sprintf("~%.0f× under-provisioned on %s", 1/f, metric)
+	default:
+		return ""
+	}
+}
+
+// distCPU/distMem format a distribution stat, rendering "—" for an absent (zero) value so an
+// unpopulated avg/p99 (e.g. recorded by an older operator) never reads as a misleading "0m".
+func distCPU(v float64) string {
+	if v <= 0 {
+		return "—"
+	}
+	return cpuMilli(v)
+}
+func distMem(v float64) string {
+	if v <= 0 {
+		return "—"
+	}
+	return formatMem(int64(v + 0.5))
+}
+
+// cpuMilli formats a CPU millicore value: one decimal below 1m (so a tiny average isn't shown
+// as "0m"), whole millicores otherwise.
+func cpuMilli(v float64) string {
+	if v > 0 && v < 0.95 {
+		return fmt.Sprintf("%.1fm", v)
+	}
+	return fmt.Sprintf("%dm", int64(v+0.5))
+}
+
+// formatWindow renders an observation window compactly (e.g. "14d", "6h", "33m", "<1m").
+func formatWindow(d time.Duration) string {
+	switch {
+	case d <= 0:
+		return "0"
+	case d.Hours() >= 24:
+		return fmt.Sprintf("%dd", int64(d.Hours()/24+0.5))
+	case d.Hours() >= 1:
+		return fmt.Sprintf("%dh", int64(d.Hours()+0.5))
+	case d.Minutes() >= 1:
+		return fmt.Sprintf("%dm", int64(d.Minutes()+0.5))
+	default:
+		return "<1m"
+	}
+}
+
+// formatCount renders large sample counts compactly (1200000 -> "1.2M", 9800 -> "9.8k").
+func formatCount(n int64) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	case n >= 1_000:
+		return fmt.Sprintf("%.1fk", float64(n)/1_000)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
 }
 
 // findRecommendation returns the first recommendation whose container name or workload

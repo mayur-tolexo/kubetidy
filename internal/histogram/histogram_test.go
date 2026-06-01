@@ -336,3 +336,29 @@ func TestObserveClampsHighValueToLastBucket(t *testing.T) {
 		t.Errorf("Max should keep raw value: got %v", h.Max())
 	}
 }
+
+func TestMean(t *testing.T) {
+	// Empty histogram → 0.
+	h := New(DefaultCPUConfig())
+	if h.Mean() != 0 {
+		t.Errorf("empty Mean = %v, want 0", h.Mean())
+	}
+
+	// Observations clustered low → Mean sits between the low and high values, and below the max.
+	base := time.Unix(1_700_000_000, 0)
+	for i := 0; i < 100; i++ {
+		h.Observe(10, base) // 100 samples at ~10m
+	}
+	h.Observe(1000, base) // one spike
+	mean := h.Mean()
+	if mean <= 0 {
+		t.Fatalf("Mean = %v, want > 0", mean)
+	}
+	if mean >= h.Max() {
+		t.Errorf("Mean %v should be below Max %v", mean, h.Max())
+	}
+	// Dominated by the 10m cluster, so the mean should be far closer to 10 than to 1000.
+	if mean > 200 {
+		t.Errorf("Mean = %v, want close to the low cluster (~10), not the spike", mean)
+	}
+}

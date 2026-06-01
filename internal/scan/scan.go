@@ -94,8 +94,9 @@ func (e *Engine) Run(ctx context.Context) (model.ScanResult, error) {
 				MonthlySavings: savings,
 				Confidence:     conf,
 				Tier:           st.Tier,
+				Usage:          st,
 				Evidence:       buildEvidence(st),
-				Explanation:    buildExplanation(w, current, proposed, st, price, e.Policy, savings),
+				Explanation:    buildExplanation(current, proposed, st, price, e.Policy),
 			}
 			result.Recommendations = append(result.Recommendations, rec)
 
@@ -177,16 +178,17 @@ func abs64(v int64) int64 {
 }
 
 // buildEvidence composes the short, human-readable justification line. It is tier-aware: a
-// single live snapshot (Tier 0) is never dressed up as a percentile.
+// single live snapshot (Tier 0) is never dressed up as a percentile. It is a compact one-line
+// summary kept for JSON consumers; the human table shows the full distribution under --explain.
 //   - Tier 0:  "live snapshot · cpu 1435m, mem 4.9Gi · 1 pod sampled"
-//   - Tier 1+: "P95 cpu 280m, peak mem 0.9Gi over 14d · 1.2k samples"
+//   - Tier 1+: "p95 cpu 280m, peak mem 0.9Gi over 14d · 1.2k samples"
 func buildEvidence(st model.UsageStats) string {
 	cpu := int64(math.Round(st.CPUMillicores.P95))
 	if st.Tier == model.TierSnapshot {
 		return fmt.Sprintf("live snapshot · cpu %s, mem %s · %s",
 			formatMillicores(cpu), formatMem(st.MemoryBytes.Max), pods(st.Samples))
 	}
-	return fmt.Sprintf("P95 cpu %s, peak mem %s over %s · %s samples",
+	return fmt.Sprintf("p95 cpu %s, peak mem %s over %s · %s samples",
 		formatMillicores(cpu), formatMem(st.MemoryBytes.Max),
 		formatWindow(st.Window), formatCount(st.Samples))
 }
@@ -240,14 +242,14 @@ func formatMem(bytes float64) string {
 	}
 }
 
-// buildExplanation composes the step-by-step derivation shown under --explain.
+// buildExplanation composes the derivation lines shown under --explain. The "why" block (in
+// the report) already shows requested/observed/proposed/savings; these lines explain the
+// FORMULA behind the proposal (percentile + headroom) and the price basis.
 func buildExplanation(
-	w model.Workload,
 	current, proposed model.ResourceSpec,
 	st model.UsageStats,
 	price model.ResourcePrice,
 	policy model.Policy,
-	savings float64,
 ) []string {
 	cpuHeadroom := policy.CPUHeadroom
 	memHeadroom := policy.MemoryHeadroom
@@ -256,40 +258,27 @@ func buildExplanation(
 		cpuHeadroom += policy.SnapshotHeadroom
 		memHeadroom += policy.SnapshotHeadroom
 		lines = append(lines,
-			fmt.Sprintf("Data: live snapshot from metrics-server (%s) — current usage only, not a peak.", pods(st.Samples)),
-			"Because a single snapshot can miss peaks, an extra safety buffer is applied and values are floored.")
-	} else {
-		lines = append(lines,
-			fmt.Sprintf("Data: tier %s over %s with %s samples.", st.Tier, formatWindow(st.Window), formatCount(st.Samples)))
+			"single snapshot can miss peaks, so an extra safety buffer is applied and requests are floored.")
 	}
 	lines = append(lines,
-		fmt.Sprintf("CPU request = cpu %s * (1 + %.0f%% headroom) = %s (was %s).",
+		fmt.Sprintf("cpu request = p95 %s × (1 + %.0f%% headroom) = %s (was %s).",
 			formatMillicores(int64(math.Round(st.CPUMillicores.P95))),
 			cpuHeadroom*100,
 			formatMillicores(proposed.Requests.CPUMillicores),
 			formatMillicores(current.Requests.CPUMillicores)),
-		fmt.Sprintf("Memory request = peak %s * (1 + %.0f%% headroom) = %s (was %s).",
+		fmt.Sprintf("mem request = peak %s × (1 + %.0f%% headroom) = %s (was %s).",
 			formatMem(st.MemoryBytes.Max),
 			memHeadroom*100,
 			formatMem(float64(proposed.Requests.MemoryBytes)),
 			formatMem(float64(current.Requests.MemoryBytes))))
 
 	if price.Source != "" {
-		lines = append(lines, fmt.Sprintf("Price: $%.2f/core-month, $%.2f/GiB-month (%s).",
+		lines = append(lines, fmt.Sprintf("price = $%.2f/core-month, $%.2f/GiB-month (%s).",
 			price.CPUCoreMonth, price.MemGiBMonth, price.Source))
 	} else {
-		lines = append(lines, fmt.Sprintf("Price: $%.2f/core-month, $%.2f/GiB-month.",
+		lines = append(lines, fmt.Sprintf("price = $%.2f/core-month, $%.2f/GiB-month.",
 			price.CPUCoreMonth, price.MemGiBMonth))
 	}
-
-	replicas := w.Replicas
-	if replicas <= 0 {
-		replicas = 1
-	}
-	lines = append(lines, fmt.Sprintf(
-		"Savings = (current - proposed cost) * %d replicas = $%.2f/month.",
-		replicas, savings))
-
 	return lines
 }
 
