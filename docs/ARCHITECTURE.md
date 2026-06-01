@@ -112,6 +112,24 @@ read-only with respect to workloads — it never evicts or resizes. `kubectl tid
 (`internal/installer`) applies the embedded CRD + operator manifests so setup is a single CLI
 command. See [design/operator.md](design/operator.md).
 
+`UsageProfile` (like the other CRDs) declares a **status subresource**, so the store writes spec
+via `Create`/`Update` and the recorded history via a follow-up `UpdateStatus` — a plain update
+silently drops `status`. On the read side the scan prefers the operator (`usage.DetectOperator`
+→ `NewOperatorProvider`) and wraps it in a `fallbackProvider` so workloads the operator has not
+profiled yet are still covered by the metrics-server snapshot (no coverage regression during
+warm-up).
+
+## Confidence and the honest tier banner
+
+`internal/rightsizer` grades each recommendation with a **data-maturity** model: snapshot/static
+tiers use a fixed low base, while time-series tiers (operator, Prometheus, OpenCost) earn their
+high base only as `maturity = min(window/72h, log10(samples)/log10(8000))` approaches 1, then
+lose ground to observed variance. So two readings over a few minutes score "low", not a
+misleading "85%". The CLI surfaces this as bands (low/med/high); the exact percentage is in
+`--explain`. The scan's `data:` banner reports the tier that **actually** backed the findings
+(the dominant tier of the recommendations), not the provider's declared tier — so during
+operator warm-up it honestly reads `snapshot` until profiles mature.
+
 ```mermaid
 flowchart LR
     timer([every scrape interval]) --> sample[sample metrics-server]

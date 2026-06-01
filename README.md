@@ -31,6 +31,10 @@ and **acting on** the recommendations. kubetidy is built around trust:
   monthly dollar figure.
 - **Every number shows its work.** `--explain` reveals the exact query, window, sample
   count, variance, and policy behind each recommendation.
+- **Confidence you can trust.** Each recommendation is graded **▒ low · ▓ med · █ high**, and
+  the grade *grows as history accumulates* — a freshly-installed operator with a couple of
+  readings reads **low**, never a false "85%". It only earns **high** once a real window of
+  samples backs it (`--explain` shows the exact %).
 - **Read-only and reversible by design.** kubetidy never mutates your cluster. `diff` prints
   the exact, reversible `kubectl patch`; `pr` writes a GitOps change set you review and merge.
 
@@ -284,10 +288,13 @@ All defaults are surfaced in `--explain` and overridable. The number is never a 
 
 ## Status
 
-🚧 **Active development.** `scan`, `diff`, `pr`, and `init` work today, with a read-only
-operator, Prometheus auto-detection, and OpenCost auto-detection for precise cost (Tier 2). See
-the [roadmap](ROADMAP.md) for what is next (guarded apply, multi-cluster), and
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the high-level design and flow diagrams.
+🚀 **v0.1.0 released** — install via [krew](#install), `curl | sh`, or pre-built archives.
+
+`scan`, `diff`, `pr`, and `init` work today, with a read-only operator that records real
+Tier‑0 history (no Prometheus), Prometheus auto-detection (Tier 1), OpenCost auto-detection for
+precise cost (Tier 2), and confidence grading that scales with data maturity. See the
+[changelog](CHANGELOG.md) for what's new, the [roadmap](ROADMAP.md) for what's next (guarded
+apply, multi-cluster), and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design.
 
 ## Contributing
 
