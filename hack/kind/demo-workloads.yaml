@@ -1,7 +1,11 @@
 # Demo workloads for kubetidy local testing.
 #
-# These are deliberately OVER-PROVISIONED: each asks for far more CPU/memory than it uses,
-# so `kubectl tidy scan` surfaces real rightsizing savings and a low efficiency score.
+# These are deliberately OVER-PROVISIONED: each asks for far more CPU/memory than it uses
+# (the pause image uses almost nothing), so `kubectl tidy scan` surfaces real rightsizing
+# savings and a low efficiency score.
+#
+# Requests are sized to fit on a single default kind node (12 CPU / ~8Gi): the whole namespace
+# asks for ~5 cores / ~5Gi, so every pod schedules and the rollout settles.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -27,11 +31,11 @@ spec:
           image: registry.k8s.io/pause:3.10
           resources:
             requests:
-              cpu: "2000m"     # asks for 2 cores...
-              memory: "4Gi"    # ...and 4Gi, but pause uses almost nothing
+              cpu: "1000m"     # asks for a full core...
+              memory: "1Gi"    # ...and 1Gi, but pause uses almost nothing
             limits:
-              cpu: "2000m"
-              memory: "4Gi"
+              cpu: "1000m"
+              memory: "1Gi"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -53,8 +57,11 @@ spec:
           image: registry.k8s.io/pause:3.10
           resources:
             requests:
-              cpu: "4000m"
-              memory: "8Gi"
+              cpu: "2000m"
+              memory: "2Gi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -63,7 +70,7 @@ metadata:
   namespace: kubetidy-demo
 spec:
   serviceName: cache
-  replicas: 3
+  replicas: 2
   selector:
     matchLabels:
       app: cache
@@ -77,5 +84,8 @@ spec:
           image: registry.k8s.io/pause:3.10
           resources:
             requests:
-              cpu: "1000m"
-              memory: "2Gi"
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"

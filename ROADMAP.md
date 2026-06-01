@@ -24,7 +24,7 @@ This roadmap is intentionally public and open for discussion — please weigh in
 - [x] One-command local demo (`make e2e` / `make e2e-prom`) + animated terminal demo
 - [x] krew plugin manifest + `curl | sh` install + tagged GitHub release pipeline (GoReleaser
       cross-platform binaries, checksums, auto-rendered krew manifest). *(Homebrew tap deferred.)*
-- [ ] README demo GIF
+- [x] README demo GIF (real Tier-1 scan + diff, recorded with VHS via `make demo-gif`)
 
 ## 🔜 Phase 2 — The real product begins: safe, reversible action (M3)
 

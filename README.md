@@ -14,7 +14,7 @@ It is read-only and safe to run anywhere. Install its tiny in-cluster operator a
 Prometheus-grade recommendations with **no Prometheus** at all.
 
 <p align="center">
-  <img src="docs/assets/demo.svg" alt="kubectl tidy scan demo" width="760">
+  <img src="docs/assets/demo.gif" alt="kubectl tidy scan and diff demo" width="820">
 </p>
 
 ---
@@ -197,6 +197,7 @@ Run `make help` to see everything. The common ones:
 | `make lint` | Run golangci-lint (installs it if missing) |
 | `make check` | Full pre-PR gate: tests + vet + gofmt + lint |
 | `make e2e` / `make e2e-prom` | Full local demo (with / without Prometheus) |
+| `make demo-gif` | Re-record the README demo GIF with VHS (after `make e2e-prom`) |
 | `make release-check` | Validate the GoReleaser config |
 | `make release-snapshot` | Build all release archives + krew manifest into `./dist` (no publish) |
 | `make operator-deploy` | Build + deploy the kubetidy operator (Tier 0, no Prometheus) |
