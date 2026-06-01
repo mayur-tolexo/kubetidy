@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -9,6 +11,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 	kfake "k8s.io/client-go/kubernetes/fake"
 	mfake "k8s.io/metrics/pkg/client/clientset/versioned/fake"
 
@@ -189,5 +192,69 @@ func TestRunPRInjectedEmpty(t *testing.T) {
 	})
 	if !strings.Contains(out, "No rightsizing recommendations") && !strings.Contains(out, "Wrote") {
 		t.Errorf("unexpected pr output:\n%s", out)
+	}
+}
+
+// --- price provider selection (Tier 1 derived vs Tier 2 OpenCost) ----------------------------
+
+func TestSelectPriceProviderDefaultDerived(t *testing.T) {
+	var warnings []string
+	p := selectPriceProvider(context.Background(), orchFakeClients(t), &scanFlags{window: "14d"}, &warnings)
+	if p.Name() != "node pricing" {
+		t.Errorf("provider = %q, want node pricing (Tier 1 default)", p.Name())
+	}
+}
+
+func TestSelectPriceProviderExplicitOpenCost(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"code":200,"data":[{"shop/api":{"name":"shop/api",` +
+			`"properties":{"namespace":"shop","controller":"api"},` +
+			`"cpuCoreHours":10,"cpuCost":0.5,"ramByteHours":1073741824000,"ramCost":0.2}}]}`))
+	}))
+	defer srv.Close()
+
+	var warnings []string
+	p := selectPriceProvider(context.Background(), orchFakeClients(t),
+		&scanFlags{opencostURL: srv.URL, window: "7d"}, &warnings)
+	if p.Name() != "OpenCost" {
+		t.Errorf("provider = %q, want OpenCost", p.Name())
+	}
+	if !strings.Contains(strings.Join(warnings, " "), "OpenCost") {
+		t.Errorf("warnings = %v, want an OpenCost note", warnings)
+	}
+}
+
+func TestSelectPriceProviderBadOpenCostFallsBack(t *testing.T) {
+	var warnings []string
+	p := selectPriceProvider(context.Background(), orchFakeClients(t),
+		&scanFlags{opencostURL: "http://opencost.invalid:9003", window: "7d"}, &warnings)
+	if p.Name() != "node pricing" {
+		t.Errorf("provider = %q, want node pricing fallback", p.Name())
+	}
+	if !strings.Contains(strings.Join(warnings, " "), "unavailable") {
+		t.Errorf("warnings = %v, want an unavailable note", warnings)
+	}
+}
+
+func TestSelectPriceProviderAutoDetect(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"code":200,"data":[{"shop/api":{"name":"shop/api",` +
+			`"properties":{"namespace":"shop","controller":"api"},` +
+			`"cpuCoreHours":10,"cpuCost":0.5,"ramByteHours":1073741824000,"ramCost":0.2}}]}`))
+	}))
+	defer srv.Close()
+
+	// Override the detection seam so auto-detect resolves to the reachable test server.
+	origDetect := detectOpenCost
+	defer func() { detectOpenCost = origDetect }()
+	detectOpenCost = func(kubernetes.Interface) string { return srv.URL }
+
+	var warnings []string
+	p := selectPriceProvider(context.Background(), orchFakeClients(t), &scanFlags{window: "7d"}, &warnings)
+	if p.Name() != "OpenCost" {
+		t.Errorf("provider = %q, want auto-detected OpenCost", p.Name())
+	}
+	if !strings.Contains(strings.Join(warnings, " "), "auto-detected OpenCost") {
+		t.Errorf("warnings = %v, want auto-detected OpenCost note", warnings)
 	}
 }

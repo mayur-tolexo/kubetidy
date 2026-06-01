@@ -49,7 +49,7 @@ This roadmap is intentionally public and open for discussion — please weigh in
 - [x] **`kubectl tidy init`** — install the CRD + operator from manifests embedded in the
       binary; no manual `kubectl apply`.
 - [ ] Guarded `apply` with auto-rollback on SLO regression
-- [ ] Tier 2: OpenCost integration for precise allocated cost
+- [x] Tier 2: OpenCost integration for precise allocated cost (auto-detected, or `--opencost-url`)
 - [ ] Accountability: per-team showback + budgets
 - [ ] Recommendation CRDs + multi-cluster aggregation (continuous, in-cluster)
 - [ ] Cleanup detectors (orphaned services/PVCs, idle namespaces, zombie workloads)

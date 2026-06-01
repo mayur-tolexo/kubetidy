@@ -22,6 +22,7 @@ type scanFlags struct {
 	explain       string
 	topN          int
 	prometheusURL string
+	opencostURL   string
 	window        string
 	cpuCoreMonth  float64
 	memGiBMonth   float64
@@ -53,6 +54,7 @@ func newScanCommand() *cobra.Command {
 	flags.StringVar(&f.explain, "explain", "", "show full derivation for a single workload")
 	flags.IntVar(&f.topN, "top", 20, "max recommendations to show (0 = all)")
 	flags.StringVar(&f.prometheusURL, "prometheus-url", "", "Prometheus base URL (forces Tier 1)")
+	flags.StringVar(&f.opencostURL, "opencost-url", "", "OpenCost base URL for precise cost (forces Tier 2; auto-detected otherwise)")
 	flags.StringVar(&f.window, "window", "14d", "Prometheus lookback window")
 	flags.Float64Var(&f.cpuCoreMonth, "cpu-cost", 0, "override $ per CPU core-month (0 = default)")
 	flags.Float64Var(&f.memGiBMonth, "mem-cost", 0, "override $ per GiB-month (0 = default)")
@@ -100,14 +102,7 @@ func runEngineWithClients(ctx context.Context, f *scanFlags, clients *kube.Clien
 	var warnings []string
 	usageProvider := selectUsageProvider(clients, f, &warnings)
 
-	cfg := pricing.DefaultConfig()
-	if f.cpuCoreMonth > 0 {
-		cfg.CPUCoreMonth = f.cpuCoreMonth
-	}
-	if f.memGiBMonth > 0 {
-		cfg.MemGiBMonth = f.memGiBMonth
-	}
-	priceProvider := pricing.NewConfigProvider(cfg)
+	priceProvider := selectPriceProvider(ctx, clients, f, &warnings)
 
 	engine := &scan.Engine{
 		Workloads: workloads,
@@ -156,6 +151,47 @@ func selectUsageProvider(clients *kube.Clients, f *scanFlags, warnings *[]string
 		}
 	}
 	return usage.NewMetricsServerProvider(clients.Metrics)
+}
+
+// detectOpenCost is a seam over pricing.DetectOpenCost so tests can point auto-detection at a
+// reachable endpoint (the real detector returns an in-cluster URL that a unit test can't reach).
+var detectOpenCost = pricing.DetectOpenCost
+
+// selectPriceProvider picks the cost source, mirroring selectUsageProvider:
+//   - an explicit --opencost-url forces Tier 2 (precise allocated cost);
+//   - otherwise kubetidy auto-detects an in-cluster OpenCost/Kubecost service and uses it when
+//     its allocation API answers, upgrading cost to Tier 2 with no configuration;
+//   - failing that, it falls back to derived node pricing (configProvider), honoring the
+//     --cpu-cost / --mem-cost overrides.
+//
+// Every upgrade or failed attempt is recorded in warnings so the report explains the source.
+func selectPriceProvider(ctx context.Context, clients *kube.Clients, f *scanFlags, warnings *[]string) pricing.Provider {
+	cfg := pricing.DefaultConfig()
+	if f.cpuCoreMonth > 0 {
+		cfg.CPUCoreMonth = f.cpuCoreMonth
+	}
+	if f.memGiBMonth > 0 {
+		cfg.MemGiBMonth = f.memGiBMonth
+	}
+	fallback := pricing.NewConfigProvider(cfg)
+
+	if f.opencostURL != "" {
+		p, err := pricing.NewOpenCostProvider(ctx, f.opencostURL, f.window)
+		if err == nil {
+			*warnings = append(*warnings, fmt.Sprintf("using OpenCost at %s for cost (Tier 2)", f.opencostURL))
+			return p
+		}
+		*warnings = append(*warnings, fmt.Sprintf("OpenCost unavailable (%v); using derived node pricing", err))
+		return fallback
+	}
+
+	if url := detectOpenCost(clients.Kube); url != "" {
+		if p, err := pricing.NewOpenCostProvider(ctx, url, f.window); err == nil {
+			*warnings = append(*warnings, fmt.Sprintf("auto-detected OpenCost at %s (Tier 2 cost)", url))
+			return p
+		}
+	}
+	return fallback
 }
 
 func render(result model.ScanResult, f *scanFlags) error {

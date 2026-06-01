@@ -33,6 +33,7 @@ func newDiffCommand() *cobra.Command {
 	flags.StringVar(&f.explain, "explain", "", "only show the patch for a single workload")
 	flags.IntVar(&f.topN, "top", 20, "max patches to show (0 = all)")
 	flags.StringVar(&f.prometheusURL, "prometheus-url", "", "Prometheus base URL (forces Tier 1)")
+	flags.StringVar(&f.opencostURL, "opencost-url", "", "OpenCost base URL for precise cost (forces Tier 2; auto-detected otherwise)")
 	flags.StringVar(&f.window, "window", "14d", "Prometheus lookback window")
 	flags.Float64Var(&f.cpuCoreMonth, "cpu-cost", 0, "override $ per CPU core-month (0 = default)")
 	flags.Float64Var(&f.memGiBMonth, "mem-cost", 0, "override $ per GiB-month (0 = default)")

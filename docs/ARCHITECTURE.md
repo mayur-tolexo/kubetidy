@@ -96,7 +96,11 @@ flowchart LR
     ts --> rec
 ```
 
-Tier 2 (OpenCost) is defined behind the `PriceProvider` interface and deferred.
+Cost is a separate axis from usage, behind the `pricing.Provider` interface. By default kubetidy
+derives prices from blended cloud rates (`pricing.NewConfigProvider`). When an in-cluster
+**OpenCost** is detected (`pricing.DetectOpenCost`) — or pointed at via `--opencost-url` — the
+`opencostProvider` queries its allocation API and serves precise per-workload allocated cost
+(Tier 2). OpenCost needs Prometheus, which is why Tier 2 sits above Tier 1.
 
 ## The operator (Tier 0)
 
