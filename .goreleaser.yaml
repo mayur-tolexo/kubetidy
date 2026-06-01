@@ -1,3 +1,12 @@
+# GoReleaser config for kubetidy — cross-platform binaries, archives, checksums, and a
+# draft GitHub release. Triggered from .github/workflows/release.yml on a v* tag.
+#
+# The same binary is both `kubetidy` and `kubectl-tidy` (it adapts to os.Args[0]). The archive
+# ships the single `kubetidy` binary; krew installs it as `kubectl-tidy`, and install.sh creates
+# the second name on the user's PATH.
+#
+# Validate locally with: goreleaser check
+# Dry-run a build with:  goreleaser release --snapshot --clean
 version: 2
 
 project_name: kubetidy
@@ -17,14 +26,18 @@ builds:
     goarch: [amd64, arm64]
     ldflags:
       - -s -w
-      - -X github.com/kubetidy/kubetidy/internal/version.Version={{.Version}}
-      - -X github.com/kubetidy/kubetidy/internal/version.Commit={{.ShortCommit}}
-      - -X github.com/kubetidy/kubetidy/internal/version.Date={{.Date}}
+      - -X github.com/kubetidy/kubetidy/internal/version.Version={{ .Version }}
+      - -X github.com/kubetidy/kubetidy/internal/version.Commit={{ .ShortCommit }}
+      - -X github.com/kubetidy/kubetidy/internal/version.Date={{ .Date }}
 
 archives:
   - id: default
-    # Ship both faces: the archive contains kubetidy and a kubectl-tidy copy so the
-    # kubectl plugin works on extract.
+    # Stable, scriptable names: kubetidy_<version>_<os>_<arch>.tar.gz (zip on Windows).
+    # install.sh and .krew.yaml both depend on this layout.
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
     files:
       - LICENSE
       - README.md
@@ -32,6 +45,32 @@ archives:
 checksum:
   name_template: "checksums.txt"
 
-# krew plugin manifest is maintained under ./.krew.yaml and submitted to the krew-index.
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot"
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "Merge pull request"
+
 release:
+  # Cut a draft first so a human can eyeball the notes + assets before publishing.
   draft: true
+  name_template: "kubetidy {{ .Tag }}"
+  footer: |
+    ## Install
+
+    **krew** (kubectl plugin):
+    ```sh
+    kubectl krew install --manifest-url https://github.com/mayur-tolexo/kubetidy/releases/download/{{ .Tag }}/kubetidy.yaml
+    ```
+
+    **curl | sh**:
+    ```sh
+    curl -fsSL https://raw.githubusercontent.com/mayur-tolexo/kubetidy/{{ .Tag }}/install.sh | sh
+    ```

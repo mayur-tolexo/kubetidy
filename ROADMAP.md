@@ -22,7 +22,8 @@ This roadmap is intentionally public and open for discussion — please weigh in
 - [x] `--output json` — stable schema for automation
 - [x] **Action-ready `Recommendation` type** (carries the patch that *would* be applied)
 - [x] One-command local demo (`make e2e` / `make e2e-prom`) + animated terminal demo
-- [ ] krew plugin manifest + Homebrew tap + `curl | sh` install
+- [x] krew plugin manifest + `curl | sh` install + tagged GitHub release pipeline (GoReleaser
+      cross-platform binaries, checksums, auto-rendered krew manifest). *(Homebrew tap deferred.)*
 - [ ] README demo GIF
 
 ## 🔜 Phase 2 — The real product begins: safe, reversible action (M3)

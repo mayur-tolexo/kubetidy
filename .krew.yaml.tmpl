@@ -1,0 +1,31 @@
+# krew plugin manifest TEMPLATE for kubetidy.
+#
+# This is not the final manifest: scripts/gen-krew-manifest.sh renders it at release time,
+# filling in the version tag and one platform entry per release archive (with the real sha256
+# from checksums.txt). The rendered kubetidy.yaml is attached to the GitHub release and can be
+# submitted to the krew-index.
+#
+# Install a rendered manifest directly with:
+#   kubectl krew install --manifest-url .../releases/download/<tag>/kubetidy.yaml
+apiVersion: krew.googlecontainertools.github.com/v1alpha2
+kind: Plugin
+metadata:
+  name: tidy
+spec:
+  version: __VERSION__
+  homepage: https://github.com/mayur-tolexo/kubetidy
+  shortDescription: Find and safely fix Kubernetes resource waste, in dollars.
+  description: |
+    kubetidy scans your cluster for over- and under-provisioned workloads and shows the
+    monthly dollar waste, an explainable rightsizing recommendation, and a confidence score
+    for each one. It is read-only by default and works on any cluster (metrics-server is
+    enough; it auto-upgrades to Prometheus when present).
+
+    Run `kubectl tidy scan` to see the waste, `kubectl tidy diff` for the exact reversible
+    kubectl patch, and `kubectl tidy init` to install the optional in-cluster operator that
+    records usage history for Prometheus-grade recommendations with no Prometheus.
+  caveats: |
+    kubetidy is read-only by default. `kubectl tidy init` installs an in-cluster operator and
+    CRDs; remove them any time with `kubectl tidy uninstall`.
+  platforms:
+__PLATFORMS__
