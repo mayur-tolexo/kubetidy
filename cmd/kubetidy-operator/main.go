@@ -16,7 +16,9 @@ import (
 
 	"github.com/kubetidy/kubetidy/internal/histogram"
 	"github.com/kubetidy/kubetidy/internal/kube"
+	"github.com/kubetidy/kubetidy/internal/model"
 	"github.com/kubetidy/kubetidy/internal/operator"
+	"github.com/kubetidy/kubetidy/internal/pricing"
 	"github.com/kubetidy/kubetidy/internal/version"
 )
 
@@ -47,14 +49,19 @@ func main() {
 	}
 
 	lister := operator.NewKubeLister(clients)
+	store := operator.NewDynamicStore(clients.Dynamic)
 	collector := operator.NewCollector(
 		lister,
 		operator.NewMetricsSampler(clients.Metrics),
-		operator.NewDynamicStore(clients.Dynamic),
+		store,
 		time.Now,
 	).WithHistogramConfig(
 		histogram.DefaultCPUConfig().WithHalfLife(*cpuHalfLife),
 		histogram.DefaultMemoryConfig().WithHalfLife(*memHalfLife),
+	).WithSummary(
+		store,
+		pricing.NewConfigProvider(pricing.DefaultConfig()),
+		model.DefaultPolicy(),
 	)
 
 	// Resume from any previously checkpointed history so a restart does not cold-start.

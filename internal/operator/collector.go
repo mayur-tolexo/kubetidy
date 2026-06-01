@@ -14,9 +14,14 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/kubetidy/kubetidy/api/v1alpha1"
 	"github.com/kubetidy/kubetidy/internal/apis/usageprofile"
+	"github.com/kubetidy/kubetidy/internal/costmodel"
 	"github.com/kubetidy/kubetidy/internal/histogram"
 	"github.com/kubetidy/kubetidy/internal/model"
+	"github.com/kubetidy/kubetidy/internal/rightsizer"
+	"github.com/kubetidy/kubetidy/internal/score"
+	"github.com/kubetidy/kubetidy/internal/summary"
 )
 
 // Sample is one observed usage reading for a container at a point in time.
@@ -41,6 +46,20 @@ type Store interface {
 // WorkloadLister returns the workloads the operator should profile.
 type WorkloadLister interface {
 	List(ctx context.Context) ([]model.Workload, error)
+}
+
+// SummaryWriter persists the per-cluster ClusterUsageSummary rollup. It is optional: when nil,
+// the collector skips summary generation (so the core checkpoint path stays dependency-light
+// and the many existing tests are unaffected).
+type SummaryWriter interface {
+	SaveSummary(ctx context.Context, status v1alpha1.ClusterUsageSummaryStatus) error
+}
+
+// Pricer returns the unit price attributable to a workload, for the cost rollup. It mirrors
+// pricing.Provider but is declared here so the operator package does not force a dependency on
+// callers that don't summarize.
+type Pricer interface {
+	ResourcePrice(ctx context.Context, w model.Workload) (model.ResourcePrice, error)
 }
 
 // Clock returns the current time. Injected so tests can drive decay deterministically.
@@ -76,6 +95,12 @@ type Collector struct {
 	cpuCfg histogram.Config
 	memCfg histogram.Config
 
+	// summaryWriter and pricer, when both set, enable per-cluster ClusterUsageSummary rollups
+	// after each tick. policy is the rightsizing policy used for the rollup recommendations.
+	summaryWriter SummaryWriter
+	pricer        Pricer
+	policy        model.Policy
+
 	// state is the live histogram set, keyed by container. It survives across ticks and is the
 	// source of truth between checkpoints.
 	state map[containerKey]*containerState
@@ -107,6 +132,16 @@ func (c *Collector) WithHistogramConfig(cpu, mem histogram.Config) *Collector {
 	return c
 }
 
+// WithSummary enables per-cluster ClusterUsageSummary rollups: after each tick the collector
+// turns its accumulated history into rightsizing recommendations (using policy + pricer) and
+// writes one ClusterUsageSummary via writer. Returns the collector for chaining.
+func (c *Collector) WithSummary(writer SummaryWriter, pricer Pricer, policy model.Policy) *Collector {
+	c.summaryWriter = writer
+	c.pricer = pricer
+	c.policy = policy
+	return c
+}
+
 // profileName returns the UsageProfile object name for a workload — a valid lowercase RFC 1123
 // name shared with the usage provider via usageprofile.ObjectName.
 func profileName(w model.Workload) string {
@@ -128,7 +163,82 @@ func (c *Collector) Tick(ctx context.Context) error {
 			firstErr = err
 		}
 	}
+
+	// After checkpointing, optionally roll the accumulated history up into a per-cluster
+	// ClusterUsageSummary. A summary error is reported but does not mask a checkpoint error.
+	if c.summaryWriter != nil && c.pricer != nil {
+		if err := c.writeSummary(ctx, workloads); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
 	return firstErr
+}
+
+// writeSummary turns the collector's live per-container history into rightsizing
+// recommendations and persists one ClusterUsageSummary rollup. It is best-effort and pure
+// aside from the single SaveSummary call.
+func (c *Collector) writeSummary(ctx context.Context, workloads []model.Workload) error {
+	recs := c.recommendations(ctx, workloads)
+
+	result := model.ScanResult{Recommendations: recs}
+	clusterScore, _ := score.Compute(result)
+
+	status := summary.Build(recs, clusterScore, c.currentCostFn(ctx), summary.Options{GeneratedAt: c.now()})
+	if err := c.summaryWriter.SaveSummary(ctx, status); err != nil {
+		return fmt.Errorf("operator: saving cluster summary: %w", err)
+	}
+	return nil
+}
+
+// recommendations builds per-container rightsizing recommendations from the collector's live
+// histograms for the given workloads, mirroring what a scan would compute.
+func (c *Collector) recommendations(ctx context.Context, workloads []model.Workload) []model.Recommendation {
+	var recs []model.Recommendation
+	for _, w := range workloads {
+		name := profileName(w)
+		price, err := c.pricer.ResourcePrice(ctx, w)
+		if err != nil {
+			price = model.ResourcePrice{}
+		}
+		for _, container := range w.Containers {
+			st, ok := c.state[containerKey{profile: name, namespace: w.Namespace, container: container.Name}]
+			if !ok {
+				continue
+			}
+			usage := model.UsageStats{
+				CPUMillicores: model.Percentiles{P50: st.cpu.Percentile(0.50), P95: st.cpu.Percentile(0.95), Max: st.cpu.Max()},
+				MemoryBytes:   model.Percentiles{P50: st.mem.Percentile(0.50), P95: st.mem.Percentile(0.95), Max: st.mem.Max()},
+				Samples:       st.observed,
+				Tier:          model.TierOperator,
+			}
+			current := model.ResourceSpec{Requests: container.Requests, Limits: container.Limits}
+			proposed := rightsizer.Recommend(current, usage, c.policy)
+			recs = append(recs, model.Recommendation{
+				Workload:       w,
+				ContainerName:  container.Name,
+				Current:        current,
+				Proposed:       proposed,
+				MonthlySavings: costmodel.MonthlySavings(current, proposed, price, w.Replicas),
+				Confidence:     rightsizer.Confidence(usage),
+				Tier:           model.TierOperator,
+			})
+		}
+	}
+	return recs
+}
+
+// currentCostFn returns a function giving a recommendation's current monthly cost, so the
+// summary can report total spend alongside wasted spend.
+func (c *Collector) currentCostFn(ctx context.Context) func(model.Recommendation) float64 {
+	return func(r model.Recommendation) float64 {
+		price, err := c.pricer.ResourcePrice(ctx, r.Workload)
+		if err != nil {
+			return 0
+		}
+		// Cost of the current spec across replicas = savings if proposed were zero; reuse
+		// MonthlySavings(current, empty) to avoid duplicating the cost formula.
+		return costmodel.MonthlySavings(r.Current, model.ResourceSpec{}, price, r.Workload.Replicas)
+	}
 }
 
 // observeAndCheckpoint samples one workload, updates its histograms, and saves its profile.
