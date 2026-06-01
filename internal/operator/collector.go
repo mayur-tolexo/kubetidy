@@ -70,12 +70,19 @@ type Collector struct {
 	store   Store
 	now     Clock
 
+	// cpuCfg/memCfg are the histogram layouts used for new container state. They default to the
+	// package defaults (7d half-life) and can be overridden via WithHistogramConfig so the
+	// operator can expose a configurable decay half-life.
+	cpuCfg histogram.Config
+	memCfg histogram.Config
+
 	// state is the live histogram set, keyed by container. It survives across ticks and is the
 	// source of truth between checkpoints.
 	state map[containerKey]*containerState
 }
 
-// NewCollector builds a Collector. now may be nil, in which case time.Now is used.
+// NewCollector builds a Collector with default histogram configs. now may be nil, in which
+// case time.Now is used.
 func NewCollector(lister WorkloadLister, sampler Sampler, store Store, now Clock) *Collector {
 	if now == nil {
 		now = time.Now
@@ -85,8 +92,19 @@ func NewCollector(lister WorkloadLister, sampler Sampler, store Store, now Clock
 		sampler: sampler,
 		store:   store,
 		now:     now,
+		cpuCfg:  histogram.DefaultCPUConfig(),
+		memCfg:  histogram.DefaultMemoryConfig(),
 		state:   make(map[containerKey]*containerState),
 	}
+}
+
+// WithHistogramConfig overrides the CPU and memory histogram layouts (e.g. a custom decay
+// half-life from operator flags) and returns the collector for chaining. It must be called
+// before the first Tick/Rehydrate.
+func (c *Collector) WithHistogramConfig(cpu, mem histogram.Config) *Collector {
+	c.cpuCfg = cpu
+	c.memCfg = mem
+	return c
 }
 
 // profileName returns the UsageProfile object name for a workload — a valid lowercase RFC 1123
@@ -156,8 +174,8 @@ func (c *Collector) Rehydrate(ctx context.Context, workloads []model.Workload) {
 		}
 		for _, ch := range profile.Status.Containers {
 			c.state[containerKey{profile: name, namespace: w.Namespace, container: ch.Name}] = &containerState{
-				cpu:          histogramFromMetric(ch.CPU, histogram.DefaultCPUConfig()),
-				mem:          histogramFromMetric(ch.Memory, histogram.DefaultMemoryConfig()),
+				cpu:          histogramFromMetric(ch.CPU, c.cpuCfg),
+				mem:          histogramFromMetric(ch.Memory, c.memCfg),
 				observed:     profile.Status.SampleCount,
 				observedSlot: parseObservedSince(profile.Status.ObservedSince, c.now()),
 			}
@@ -192,8 +210,8 @@ func (c *Collector) stateFor(key containerKey, now time.Time) *containerState {
 	st, ok := c.state[key]
 	if !ok {
 		st = &containerState{
-			cpu:          histogram.New(histogram.DefaultCPUConfig()),
-			mem:          histogram.New(histogram.DefaultMemoryConfig()),
+			cpu:          histogram.New(c.cpuCfg),
+			mem:          histogram.New(c.memCfg),
 			observedSlot: now,
 		}
 		c.state[key] = st

@@ -7,20 +7,34 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/kubetidy/kubetidy/internal/histogram"
 	"github.com/kubetidy/kubetidy/internal/kube"
 	"github.com/kubetidy/kubetidy/internal/operator"
 	"github.com/kubetidy/kubetidy/internal/version"
 )
 
 func main() {
+	var (
+		scrapeInterval = flag.Duration("scrape-interval", 30*time.Second,
+			"how often to sample metrics-server and fold readings into usage history")
+		cpuHalfLife = flag.Duration("cpu-half-life", histogram.DefaultHalfLife,
+			"decay half-life for CPU usage history (longer remembers longer cycles; same footprint)")
+		memHalfLife = flag.Duration("memory-half-life", histogram.DefaultHalfLife,
+			"decay half-life for memory usage history")
+	)
+	flag.Parse()
+
 	logger := log.New(os.Stdout, "kubetidy-operator ", log.LstdFlags|log.LUTC)
 	logger.Printf("version %s", version.String())
+	logger.Printf("scrape-interval=%s cpu-half-life=%s memory-half-life=%s",
+		*scrapeInterval, *cpuHalfLife, *memHalfLife)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -38,6 +52,9 @@ func main() {
 		operator.NewMetricsSampler(clients.Metrics),
 		operator.NewDynamicStore(clients.Dynamic),
 		time.Now,
+	).WithHistogramConfig(
+		histogram.DefaultCPUConfig().WithHalfLife(*cpuHalfLife),
+		histogram.DefaultMemoryConfig().WithHalfLife(*memHalfLife),
 	)
 
 	// Resume from any previously checkpointed history so a restart does not cold-start.
@@ -48,7 +65,7 @@ func main() {
 		logger.Printf("rehydrated history for up to %d workloads", len(workloads))
 	}
 
-	if err := operator.Run(ctx, collector, operator.Options{Logger: logger}); err != nil && ctx.Err() == nil {
+	if err := operator.Run(ctx, collector, operator.Options{ScrapeInterval: *scrapeInterval, Logger: logger}); err != nil && ctx.Err() == nil {
 		logger.Fatalf("operator run failed: %v", err)
 	}
 }

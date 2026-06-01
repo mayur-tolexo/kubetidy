@@ -36,16 +36,30 @@ type Config struct {
 	HalfLife time.Duration
 }
 
+// DefaultHalfLife is the default decay half-life. At 7 days a full week of behaviour (weekday
+// traffic, nightly jobs, weekly batches) is retained before it is half-forgotten, which is the
+// longest cycle kubetidy's recommendations need to capture. It is operator-configurable.
+const DefaultHalfLife = 7 * 24 * time.Hour
+
 // DefaultCPUConfig returns a bucket layout suited to CPU usage in millicores: from ~1m up to
-// roughly 64 cores across exponential buckets, with a 24h half-life.
+// roughly 64 cores across exponential buckets, with the default half-life.
 func DefaultCPUConfig() Config {
-	return Config{FirstBucketUpper: 1, Ratio: 1.2, NumBuckets: 64, HalfLife: 24 * time.Hour}
+	return Config{FirstBucketUpper: 1, Ratio: 1.2, NumBuckets: 64, HalfLife: DefaultHalfLife}
 }
 
 // DefaultMemoryConfig returns a bucket layout suited to memory usage in bytes: from ~1Mi up to
-// roughly 128Gi across exponential buckets, with a 24h half-life.
+// roughly 128Gi across exponential buckets, with the default half-life.
 func DefaultMemoryConfig() Config {
-	return Config{FirstBucketUpper: 1024 * 1024, Ratio: 1.25, NumBuckets: 64, HalfLife: 24 * time.Hour}
+	return Config{FirstBucketUpper: 1024 * 1024, Ratio: 1.25, NumBuckets: 64, HalfLife: DefaultHalfLife}
+}
+
+// WithHalfLife returns a copy of cfg with the half-life overridden. A non-positive value
+// leaves the existing half-life unchanged, so a missing/zero flag falls back to the default.
+func (c Config) WithHalfLife(d time.Duration) Config {
+	if d > 0 {
+		c.HalfLife = d
+	}
+	return c
 }
 
 // Histogram is an exponentially-decaying bucketed histogram. The zero value is not usable;
