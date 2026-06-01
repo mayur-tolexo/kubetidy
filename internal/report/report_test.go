@@ -172,8 +172,8 @@ func TestTableRecommendationRow(t *testing.T) {
 	if !strings.Contains(out, "$210/mo") {
 		t.Errorf("missing savings\n--- got ---\n%s", out)
 	}
-	if !strings.Contains(out, "█ high") {
-		t.Errorf("missing confidence band\n--- got ---\n%s", out)
+	if !strings.Contains(out, "█ high 96%") {
+		t.Errorf("missing confidence band + percent\n--- got ---\n%s", out)
 	}
 	// Evidence is indented under the row with the └ marker.
 	if !strings.Contains(out, "    └ P95 cpu 280m") {
