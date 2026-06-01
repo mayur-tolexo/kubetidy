@@ -156,8 +156,8 @@ prometheus: ## Deploy a minimal Prometheus into the cluster (unlocks Tier 1)
 	@echo "Prometheus ready. kubetidy auto-detects it; scans now run at Tier 1."
 
 .PHONY: crd-install
-crd-install: ## Install just the UsageProfile CRD into the kind cluster
-	kubectl --context kind-$(KIND_CLUSTER) apply -f config/crd/usageprofiles.yaml
+crd-install: ## Install the kubetidy CRDs into the kind cluster
+	kubectl --context kind-$(KIND_CLUSTER) apply -f config/crd/
 
 .PHONY: operator-image
 operator-image: ## Build the operator image for the local Linux arch and load it into Docker
@@ -176,10 +176,16 @@ operator-deploy: ## Build, load, and deploy the kubetidy operator into the kind 
 	docker buildx build --platform $(LOCAL_PLATFORM) --load \
 		-t $(OPERATOR_IMAGE):$(OPERATOR_TAG) -f hack/operator/Dockerfile .
 	kind load docker-image $(OPERATOR_IMAGE):$(OPERATOR_TAG) --name $(KIND_CLUSTER)
-	kubectl --context kind-$(KIND_CLUSTER) apply -f config/crd/usageprofiles.yaml
+	kubectl --context kind-$(KIND_CLUSTER) apply -f config/crd/
 	kubectl --context kind-$(KIND_CLUSTER) apply -f config/operator/operator.yaml
 	kubectl --context kind-$(KIND_CLUSTER) -n kubetidy-system rollout status deployment/kubetidy-operator --timeout=120s
 	@echo "Operator running. Give it a few minutes to accumulate history; scans then run at Tier 0 (operator) with no Prometheus."
+
+.PHONY: operator-undeploy
+operator-undeploy: ## Remove the operator + CRDs from the kind cluster (inverse of operator-deploy)
+	-kubectl --context kind-$(KIND_CLUSTER) delete -f config/operator/operator.yaml --ignore-not-found
+	-kubectl --context kind-$(KIND_CLUSTER) delete -f config/crd/ --ignore-not-found
+	@echo "Operator and CRDs removed from kind."
 
 .PHONY: demo-scan
 demo-scan: build ## Run a scan against the demo namespace in the kind cluster

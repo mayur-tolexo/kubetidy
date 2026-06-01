@@ -88,6 +88,18 @@ kubectl tidy init --image REPO/kubetidy-operator:TAG   # pin a custom operator i
 `init` applies the CRD first, waits for it to become Established, then deploys the operator.
 It is idempotent — re-run it any time to converge the cluster to the embedded manifests.
 
+To remove everything `init` created, use its inverse:
+
+```sh
+kubectl tidy uninstall              # delete the operator + all CRDs (and recorded data); prompts first
+kubectl tidy uninstall --yes        # skip the confirmation prompt
+kubectl tidy uninstall --keep-crds  # remove only the operator; keep the CRDs and history
+```
+
+`uninstall` deletes the operator first (so it stops writing), then the CRDs — which cascades
+to every recorded `UsageProfile`, `ClusterUsageSummary`, and `Recommendation`. It is
+idempotent: already-absent objects are skipped.
+
 The operator runs from the published image `docker.io/mayurdas1991/kubetidy-operator:latest` —
 a **multi-arch Linux image** (`linux/amd64` + `linux/arm64`) that runs in kind and in any
 Kubernetes cluster. Maintainers publish it with `make operator-push` (after `docker login`;

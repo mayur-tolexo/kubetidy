@@ -19,6 +19,7 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -131,6 +132,94 @@ func Install(ctx context.Context, dyn dynamic.Interface, disco discovery.Discove
 		return err
 	}
 	opts.log("install complete")
+	return nil
+}
+
+// Uninstall removes everything Install created: the operator (Deployment, RBAC, namespace)
+// first, then the CRDs. Deleting a CRD cascades to all of its custom resources, so this also
+// removes every UsageProfile, ClusterUsageSummary and Recommendation. It is idempotent —
+// already-absent objects are skipped, so a partial prior install still cleans up fully.
+//
+// keepCRDs, when true, removes only the operator and leaves the CRDs (and their recorded data)
+// in place — useful when several tools share the API or you want to redeploy without losing
+// history.
+func Uninstall(ctx context.Context, dyn dynamic.Interface, disco discovery.DiscoveryInterface, keepCRDs bool, log func(string)) error {
+	logf := func(m string) {
+		if log != nil {
+			log(m)
+		}
+	}
+	mapper, err := newRESTMapper(disco)
+	if err != nil {
+		return fmt.Errorf("installer: building REST mapper: %w", err)
+	}
+
+	// Operator first (Deployment/RBAC/namespace), so the controller stops writing before its
+	// CRDs are removed.
+	logf("deleting operator (deployment, RBAC, namespace)")
+	if err := deleteManifest(ctx, dyn, mapper, operatorManifest); err != nil {
+		return err
+	}
+
+	if keepCRDs {
+		logf("operator removed (CRDs and recorded data kept)")
+		return nil
+	}
+
+	logf("deleting kubetidy CRDs (this also removes all recorded usage data)")
+	if err := deleteManifest(ctx, dyn, mapper, crdManifest); err != nil {
+		return err
+	}
+	logf("uninstall complete")
+	return nil
+}
+
+// deleteManifest decodes a (possibly multi-document) YAML manifest and deletes each object,
+// tolerating not-found so the operation is idempotent.
+func deleteManifest(ctx context.Context, dyn dynamic.Interface, mapper *restmapper.DeferredDiscoveryRESTMapper, manifest []byte) error {
+	objs, err := decodeObjects(manifest)
+	if err != nil {
+		return err
+	}
+	for _, obj := range objs {
+		if err := deleteObject(ctx, dyn, mapper, obj); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// deleteObject deletes a single unstructured object, treating not-found (object or its type)
+// as success.
+func deleteObject(ctx context.Context, dyn dynamic.Interface, mapper *restmapper.DeferredDiscoveryRESTMapper, obj *unstructured.Unstructured) error {
+	gvk := obj.GroupVersionKind()
+	mapping, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+	if err != nil {
+		// The type isn't registered (e.g. CRD already gone) — nothing to delete.
+		if meta.IsNoMatchError(err) {
+			return nil
+		}
+		return fmt.Errorf("installer: no REST mapping for %s: %w", gvk, err)
+	}
+
+	var ri dynamic.ResourceInterface
+	if mapping.Scope.Name() == "namespace" {
+		ns := obj.GetNamespace()
+		if ns == "" {
+			ns = "default"
+		}
+		ri = dyn.Resource(mapping.Resource).Namespace(ns)
+	} else {
+		ri = dyn.Resource(mapping.Resource)
+	}
+
+	err = ri.Delete(ctx, obj.GetName(), metav1.DeleteOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("installer: deleting %s/%s: %w", gvk.Kind, obj.GetName(), err)
+	}
 	return nil
 }
 
