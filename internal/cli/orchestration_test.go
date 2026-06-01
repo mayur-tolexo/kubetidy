@@ -11,10 +11,14 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	dynfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes"
 	kfake "k8s.io/client-go/kubernetes/fake"
 	mfake "k8s.io/metrics/pkg/client/clientset/versioned/fake"
 
+	"github.com/kubetidy/kubetidy/internal/apis/usageprofile"
 	"github.com/kubetidy/kubetidy/internal/kube"
 	"github.com/kubetidy/kubetidy/internal/model"
 )
@@ -256,5 +260,51 @@ func TestSelectPriceProviderAutoDetect(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(warnings, " "), "auto-detected OpenCost") {
 		t.Errorf("warnings = %v, want auto-detected OpenCost note", warnings)
+	}
+}
+
+// --- operator (Tier 0) usage selection ------------------------------------------------------
+
+func TestSelectUsageProviderPrefersOperatorWhenProfilesExist(t *testing.T) {
+	// A dynamic client seeded with one UsageProfile makes DetectOperator return true.
+	scheme := runtime.NewScheme()
+	gvr := usageprofile.GroupVersionResource()
+	listKinds := map[schema.GroupVersionResource]string{gvr: "UsageProfileList"}
+	prof := usageprofile.UsageProfile{
+		Namespace: "shop",
+		Name:      usageprofile.ObjectName("Deployment", "api"),
+		Status:    usageprofile.Status{SampleCount: 100},
+	}
+	u := prof.ToUnstructured()
+	u.SetGroupVersionKind(schema.GroupVersionKind{Group: usageprofile.Group, Version: usageprofile.Version, Kind: usageprofile.Kind})
+	dyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(scheme, listKinds, u)
+
+	clients := &kube.Clients{
+		Kube:    kfake.NewSimpleClientset(), // no Prometheus service
+		Metrics: mfake.NewSimpleClientset(),
+		Dynamic: dyn,
+	}
+	var warnings []string
+	p := selectUsageProvider(clients, &scanFlags{window: "14d"}, &warnings)
+	if p.Name() != "kubetidy operator" {
+		t.Errorf("provider = %q, want kubetidy operator (Tier 0)", p.Name())
+	}
+	if !strings.Contains(strings.Join(warnings, " "), "operator history") {
+		t.Errorf("warnings = %v, want an operator-history note", warnings)
+	}
+}
+
+func TestSelectUsageProviderNoOperatorFallsBackToSnapshot(t *testing.T) {
+	// No UsageProfiles (empty dynamic client) -> DetectOperator false -> metrics-server.
+	scheme := runtime.NewScheme()
+	gvr := usageprofile.GroupVersionResource()
+	listKinds := map[schema.GroupVersionResource]string{gvr: "UsageProfileList"}
+	dyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(scheme, listKinds)
+
+	clients := &kube.Clients{Kube: kfake.NewSimpleClientset(), Metrics: mfake.NewSimpleClientset(), Dynamic: dyn}
+	var warnings []string
+	p := selectUsageProvider(clients, &scanFlags{window: "14d"}, &warnings)
+	if p.Name() != "metrics-server" {
+		t.Errorf("provider = %q, want metrics-server", p.Name())
 	}
 }

@@ -108,7 +108,14 @@ func TestDynamicStore_SaveUpdatesExisting(t *testing.T) {
 	profile := usageprofile.UsageProfile{
 		Namespace: "ns1",
 		Name:      "Deployment-web",
-		Status:    usageprofile.Status{SampleCount: 99},
+		Status: usageprofile.Status{
+			SampleCount: 99,
+			// Container history lives in status; it must survive the write (the bug was that
+			// Save used a plain Update, which drops the status subresource on a real cluster).
+			Containers: []usageprofile.ContainerHistory{
+				{Name: "app", CPU: usageprofile.MetricHistory{P95: 250, Max: 300}},
+			},
+		},
 	}
 	if err := store.Save(context.Background(), profile); err != nil {
 		t.Fatalf("Save (update): %v", err)
@@ -120,6 +127,9 @@ func TestDynamicStore_SaveUpdatesExisting(t *testing.T) {
 	}
 	if !ok || got.Status.SampleCount != 99 {
 		t.Fatalf("update did not persist, ok=%v profile=%+v", ok, got)
+	}
+	if len(got.Status.Containers) != 1 || got.Status.Containers[0].Name != "app" {
+		t.Fatalf("container history not persisted on update: %+v", got.Status.Containers)
 	}
 }
 

@@ -150,6 +150,19 @@ func selectUsageProvider(clients *kube.Clients, f *scanFlags, warnings *[]string
 			return p
 		}
 	}
+
+	// No Prometheus: prefer the kubetidy operator's recorded history (Tier 0) when it's
+	// installed and has written profiles. Fall back to the metrics-server snapshot per workload
+	// so workloads the operator has not profiled yet are still covered (no coverage regression
+	// while the operator warms up).
+	if usage.DetectOperator(clients.Dynamic) {
+		*warnings = append(*warnings, "using kubetidy operator history (Tier 0); metrics-server snapshot covers any not-yet-profiled workloads")
+		return usage.NewFallbackProvider(
+			usage.NewOperatorProvider(clients.Dynamic),
+			usage.NewMetricsServerProvider(clients.Metrics),
+		)
+	}
+
 	return usage.NewMetricsServerProvider(clients.Metrics)
 }
 
