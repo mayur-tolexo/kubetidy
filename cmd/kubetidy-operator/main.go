@@ -62,6 +62,10 @@ func main() {
 		store,
 		pricing.NewConfigProvider(pricing.DefaultConfig()),
 		model.DefaultPolicy(),
+	).WithRecommendations(
+		store,
+		pricing.NewConfigProvider(pricing.DefaultConfig()),
+		model.DefaultPolicy(),
 	)
 
 	// Resume from any previously checkpointed history so a restart does not cold-start.

@@ -19,6 +19,7 @@ import (
 	"github.com/kubetidy/kubetidy/internal/costmodel"
 	"github.com/kubetidy/kubetidy/internal/histogram"
 	"github.com/kubetidy/kubetidy/internal/model"
+	"github.com/kubetidy/kubetidy/internal/recommend"
 	"github.com/kubetidy/kubetidy/internal/rightsizer"
 	"github.com/kubetidy/kubetidy/internal/score"
 	"github.com/kubetidy/kubetidy/internal/summary"
@@ -53,6 +54,12 @@ type WorkloadLister interface {
 // and the many existing tests are unaffected).
 type SummaryWriter interface {
 	SaveSummary(ctx context.Context, status v1alpha1.ClusterUsageSummaryStatus) error
+}
+
+// RecommendationWriter persists per-workload Recommendation custom resources. Optional: when
+// nil the collector does not emit Recommendation objects.
+type RecommendationWriter interface {
+	SaveRecommendation(ctx context.Context, rec v1alpha1.Recommendation) error
 }
 
 // Pricer returns the unit price attributable to a workload, for the cost rollup. It mirrors
@@ -94,6 +101,9 @@ type Collector struct {
 	// operator can expose a configurable decay half-life.
 	cpuCfg histogram.Config
 	memCfg histogram.Config
+
+	// recWriter, when set (with pricer + policy), enables per-workload Recommendation CRDs.
+	recWriter RecommendationWriter
 
 	// summaryWriter and pricer, when both set, enable per-cluster ClusterUsageSummary rollups
 	// after each tick. policy is the rightsizing policy used for the rollup recommendations.
@@ -142,6 +152,17 @@ func (c *Collector) WithSummary(writer SummaryWriter, pricer Pricer, policy mode
 	return c
 }
 
+// WithRecommendations enables per-workload Recommendation CRDs: after each tick the collector
+// converts its rightsizing recommendations into typed Recommendation objects (Source=rules)
+// and writes them via writer. It shares the pricer + policy with the summary; pass them here
+// too so it can be enabled independently. Returns the collector for chaining.
+func (c *Collector) WithRecommendations(writer RecommendationWriter, pricer Pricer, policy model.Policy) *Collector {
+	c.recWriter = writer
+	c.pricer = pricer
+	c.policy = policy
+	return c
+}
+
 // profileName returns the UsageProfile object name for a workload — a valid lowercase RFC 1123
 // name shared with the usage provider via usageprofile.ObjectName.
 func profileName(w model.Workload) string {
@@ -164,22 +185,42 @@ func (c *Collector) Tick(ctx context.Context) error {
 		}
 	}
 
-	// After checkpointing, optionally roll the accumulated history up into a per-cluster
-	// ClusterUsageSummary. A summary error is reported but does not mask a checkpoint error.
-	if c.summaryWriter != nil && c.pricer != nil {
-		if err := c.writeSummary(ctx, workloads); err != nil && firstErr == nil {
-			firstErr = err
+	// After checkpointing, optionally emit recommendations + the per-cluster rollup. Both
+	// reuse the same per-container recommendations, computed once here. Errors are reported
+	// but never mask a checkpoint error.
+	if c.pricer != nil && (c.summaryWriter != nil || c.recWriter != nil) {
+		recs := c.recommendations(ctx, workloads)
+		if c.recWriter != nil {
+			if err := c.writeRecommendations(ctx, recs); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+		if c.summaryWriter != nil {
+			if err := c.writeSummary(ctx, recs); err != nil && firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
 	return firstErr
 }
 
-// writeSummary turns the collector's live per-container history into rightsizing
-// recommendations and persists one ClusterUsageSummary rollup. It is best-effort and pure
-// aside from the single SaveSummary call.
-func (c *Collector) writeSummary(ctx context.Context, workloads []model.Workload) error {
-	recs := c.recommendations(ctx, workloads)
+// writeRecommendations converts the per-container recommendations into typed Recommendation
+// CRDs (one per workload) and persists each. Best-effort: the first save error is returned but
+// every workload is attempted.
+func (c *Collector) writeRecommendations(ctx context.Context, recs []model.Recommendation) error {
+	built := recommend.Build(recs, recommend.Options{Source: v1alpha1.SourceRules, GeneratedAt: c.now()})
+	var firstErr error
+	for _, b := range built {
+		if err := c.recWriter.SaveRecommendation(ctx, b.Recommendation); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("operator: saving recommendation %s/%s: %w", b.Namespace, b.Name, err)
+		}
+	}
+	return firstErr
+}
 
+// writeSummary rolls the given per-container recommendations up into one ClusterUsageSummary
+// and persists it. Best-effort aside from the single SaveSummary call.
+func (c *Collector) writeSummary(ctx context.Context, recs []model.Recommendation) error {
 	result := model.ScanResult{Recommendations: recs}
 	clusterScore, _ := score.Compute(result)
 
