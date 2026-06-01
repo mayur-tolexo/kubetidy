@@ -8,6 +8,8 @@
 package usageprofile
 
 import (
+	"strings"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
@@ -23,6 +25,35 @@ const (
 // GroupVersionResource is the dynamic-client coordinate for UsageProfile objects.
 func GroupVersionResource() schema.GroupVersionResource {
 	return schema.GroupVersionResource{Group: Group, Version: Version, Resource: Resource}
+}
+
+// ObjectName returns the UsageProfile object name for a workload kind+name. Kubernetes object
+// names must be a lowercase RFC 1123 subdomain, so the kind (e.g. "Deployment") is lowercased
+// and any character outside [a-z0-9.-] is replaced with '-'. Both the operator (writer) and
+// the usage provider (reader) MUST call this so they agree on the name.
+func ObjectName(kind, name string) string {
+	return sanitizeDNS(strings.ToLower(kind) + "-" + name)
+}
+
+// sanitizeDNS coerces s into a valid RFC 1123 subdomain: lowercase, only [a-z0-9.-], and
+// trimmed so it starts and ends with an alphanumeric. An empty or fully-invalid input yields
+// "x" so the name is always valid.
+func sanitizeDNS(s string) string {
+	s = strings.ToLower(s)
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '.':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+	}
+	out := strings.Trim(b.String(), "-.")
+	if out == "" {
+		return "x"
+	}
+	return out
 }
 
 // apiVersion is the "group/version" string written into every object.

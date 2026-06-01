@@ -89,11 +89,10 @@ func NewCollector(lister WorkloadLister, sampler Sampler, store Store, now Clock
 	}
 }
 
-// profileName returns the UsageProfile object name for a workload: "<kind>-<name>", lowercased
-// by convention elsewhere; here we keep the workload's own casing for the lookup key and rely
-// on the store to normalise if needed.
+// profileName returns the UsageProfile object name for a workload — a valid lowercase RFC 1123
+// name shared with the usage provider via usageprofile.ObjectName.
 func profileName(w model.Workload) string {
-	return fmt.Sprintf("%s-%s", w.Kind, w.Name)
+	return usageprofile.ObjectName(string(w.Kind), w.Name)
 }
 
 // Tick performs one collection cycle: list workloads, sample each, fold the samples into the

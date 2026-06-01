@@ -37,9 +37,9 @@ func TestTick_SavesProfileWithUsage(t *testing.T) {
 		t.Fatalf("Tick: %v", err)
 	}
 
-	prof, ok := store.get("ns1", "Deployment-web")
+	prof, ok := store.get("ns1", "deployment-web")
 	if !ok {
-		t.Fatalf("expected a saved profile for ns1/Deployment-web")
+		t.Fatalf("expected a saved profile for ns1/deployment-web")
 	}
 	if prof.Spec.TargetRef.Kind != "Deployment" || prof.Spec.TargetRef.Name != "web" {
 		t.Fatalf("TargetRef = %+v, want Deployment/web", prof.Spec.TargetRef)
@@ -91,7 +91,7 @@ func TestTick_TwiceGrowsSampleCount(t *testing.T) {
 		t.Fatalf("second Tick: %v", err)
 	}
 
-	prof, ok := store.get("ns1", "Deployment-web")
+	prof, ok := store.get("ns1", "deployment-web")
 	if !ok {
 		t.Fatal("no profile saved")
 	}
@@ -137,10 +137,10 @@ func TestTick_SamplerErrorPropagatesButOthersProcessed(t *testing.T) {
 	if err := c.Tick(context.Background()); err == nil {
 		t.Fatal("expected error from sampler failure")
 	}
-	if _, ok := store.get("ns1", "Deployment-web"); ok {
+	if _, ok := store.get("ns1", "deployment-web"); ok {
 		t.Error("errored workload should not be saved")
 	}
-	if _, ok := store.get("ns2", "Deployment-api"); !ok {
+	if _, ok := store.get("ns2", "deployment-api"); !ok {
 		t.Error("non-errored workload should still be saved")
 	}
 	if sampler.calls != 2 {
@@ -185,7 +185,7 @@ func TestTick_ZeroValuedSamplesNotObservedButProfileSaved(t *testing.T) {
 	if err := c.Tick(context.Background()); err != nil {
 		t.Fatalf("Tick: %v", err)
 	}
-	prof, ok := store.get("ns1", "Deployment-web")
+	prof, ok := store.get("ns1", "deployment-web")
 	if !ok {
 		t.Fatal("profile should be saved even for zero-valued samples")
 	}
@@ -212,7 +212,7 @@ func TestTick_UnlistedContainerNotInProfile(t *testing.T) {
 	if err := c.Tick(context.Background()); err != nil {
 		t.Fatalf("Tick: %v", err)
 	}
-	prof, _ := store.get("ns1", "Deployment-web")
+	prof, _ := store.get("ns1", "deployment-web")
 	if len(prof.Status.Containers) != 1 || prof.Status.Containers[0].Name != "app" {
 		t.Fatalf("expected only template container 'app', got %+v", prof.Status.Containers)
 	}
@@ -248,7 +248,7 @@ func TestTick_MultiContainerAccumulatesAcrossTicks(t *testing.T) {
 			t.Fatalf("tick %d: %v", i, err)
 		}
 	}
-	prof, _ := store.get("ns1", "Deployment-web")
+	prof, _ := store.get("ns1", "deployment-web")
 	if len(prof.Status.Containers) != 2 {
 		t.Fatalf("want 2 containers, got %d", len(prof.Status.Containers))
 	}

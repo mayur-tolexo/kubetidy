@@ -2,7 +2,6 @@ package usage
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -34,7 +33,7 @@ func (p *operatorProvider) Tier() model.EvidenceTier { return model.TierOperator
 // empty map rather than an error, so the scan degrades gracefully for not-yet-profiled
 // workloads.
 func (p *operatorProvider) Usage(ctx context.Context, w model.Workload) (map[string]model.UsageStats, error) {
-	name := fmt.Sprintf("%s-%s", w.Kind, w.Name)
+	name := usageprofile.ObjectName(string(w.Kind), w.Name)
 	obj, err := p.client.
 		Resource(usageprofile.GroupVersionResource()).
 		Namespace(w.Namespace).
