@@ -17,9 +17,9 @@ type Config struct {
 //
 // These are deliberate approximations: ~$24.0 per vCPU-core-month and ~$3.2 per GiB-month,
 // roughly a general-purpose vCPU/GiB blended across AWS/GCP/Azure on-demand list pricing as
-// of 2025. They give the Tier-0/Tier-1 scan a credible dollar figure without any external
-// cost source. When OpenCost is available (Tier 2, deferred), these derived prices are
-// replaced by precise allocated cost. Operators can override via flags.
+// of 2025. They give the scan a credible dollar figure without any external cost source
+// (Tier 1). When OpenCost is available (Tier 2), opencostProvider replaces these derived
+// prices with precise allocated cost. Operators can override via flags.
 func DefaultConfig() Config {
 	return Config{CPUCoreMonth: 24.0, MemGiBMonth: 3.2}
 }

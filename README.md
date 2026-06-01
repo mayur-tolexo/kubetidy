@@ -39,15 +39,23 @@ and **acting on** the recommendations. kubetidy is built around trust:
 kubetidy auto-detects the best data source available and stamps every finding with the tier
 that proved it. It never fails hard — it degrades to whatever is present.
 
-| Tier | Needs | You get | Confidence |
-|------|-------|---------|------------|
-| 0 | K8s API + **kubetidy operator** | historical P50/P95/max with **no Prometheus** | high |
-| — | K8s API + metrics-server only | single live snapshot (fallback, conservative) | low |
-| 1 | + Prometheus | historical P50/P95/max over a window | high |
-| 2 | + OpenCost *(coming)* | precise allocated cost | high |
+There are two tiers — the difference is **how the dollars are priced**:
 
-kubetidy prefers, in order: **Prometheus (Tier 1)** → **kubetidy operator (Tier 0)** → bare
-metrics-server snapshot (a conservative fallback). All are auto-detected; no flags required.
+| Tier | Needs | Usage data | Cost basis |
+|------|-------|------------|------------|
+| 1 | K8s API + metrics-server **or** Prometheus | live snapshot (metrics-server) or historical P50/P95/max (Prometheus / kubetidy operator) | **derived** node pricing (blended `$/core`, `$/GiB`, refined by instance type) |
+| 2 | Prometheus + **OpenCost** | historical P50/P95/max | **precise allocated cost** from OpenCost (spot / reserved / committed-use discounts included) |
+
+Tier 1 works on **any cluster** with no cost dependency — the dollar figure is derived from
+blended cloud pricing (override with `--cpu-cost` / `--mem-cost`). Tier 2 kicks in when an
+in-cluster **OpenCost** is present (it needs Prometheus, which is why it sits above Tier 1):
+kubetidy auto-detects it and replaces the derived prices with real allocated cost. Point at one
+explicitly with `--opencost-url`.
+
+Within Tier 1, kubetidy auto-detects the best **usage** source — Prometheus or the kubetidy
+operator (historical, high-confidence) over a bare metrics-server snapshot (a conservative
+fallback) — and stamps every finding with what proved it. No flags required; it never fails
+hard, degrading to whatever is present.
 
 ## Install
 
@@ -277,8 +285,8 @@ All defaults are surfaced in `--explain` and overridable. The number is never a 
 ## Status
 
 🚧 **Active development.** `scan`, `diff`, `pr`, and `init` work today, with a read-only
-operator (Tier 0) and Prometheus auto-detection. See the [roadmap](ROADMAP.md) for what is
-next (guarded apply, OpenCost cost, multi-cluster), and
+operator, Prometheus auto-detection, and OpenCost auto-detection for precise cost (Tier 2). See
+the [roadmap](ROADMAP.md) for what is next (guarded apply, multi-cluster), and
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the high-level design and flow diagrams.
 
 ## Contributing

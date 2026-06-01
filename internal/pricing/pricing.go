@@ -1,5 +1,6 @@
-// Package pricing defines the PriceProvider interface and a default, config-driven
-// implementation. Tier 2 (OpenCost) will add a second implementation behind this interface.
+// Package pricing defines the price Provider interface and two implementations behind it: a
+// default config-driven one (derived blended cloud rates, Tier 1) and an OpenCost-backed one
+// that serves precise allocated cost when OpenCost is present (Tier 2).
 package pricing
 
 import (
