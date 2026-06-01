@@ -147,18 +147,22 @@ func roundUpMiB(bytes int64) int64 {
 // sample counts, and loses a penalty proportional to the metrics' coefficient of variation.
 // TierSnapshot is capped at 0.6 (a single live snapshot is never high-confidence). The final
 // score is clamped to [0.05, 0.99].
+// Data-maturity references: a time-series tier earns its full base confidence only once it has
+// accumulated roughly this much window AND this many samples. Below that it is "still warming
+// up" and confidence scales down toward immatureFloor — so a freshly-installed operator with two
+// readings reads "low", not "high". Picked so a Tier-0 operator (30s scrape) reaches full
+// maturity after ~3 days; Prometheus with a 14d window matures quickly on sample count.
+const (
+	matureWindowHours = 72.0
+	matureSamples     = 8000.0
+	immatureFloor     = 0.30
+)
+
+// Confidence scores a recommendation 0..1 from its usage evidence. Snapshot/static tiers use a
+// fixed (low) base; time-series tiers (operator, Prometheus, OpenCost) earn their high base only
+// as data matures (enough window AND samples), then lose ground to observed variance.
 func Confidence(usage model.UsageStats) model.Confidence {
 	base := tierBase(usage.Tier)
-
-	// Window bonus: up to +0.05, scaling toward a 14-day reference window.
-	windowDays := usage.Window.Hours() / 24
-	windowBonus := 0.05 * clamp01(windowDays/14)
-
-	// Sample bonus: up to +0.05, scaling logarithmically toward ~10k samples.
-	sampleBonus := 0.0
-	if usage.Samples > 1 {
-		sampleBonus = 0.05 * clamp01(math.Log10(float64(usage.Samples))/4) // 10^4 = 10k
-	}
 
 	// Variance penalty: driven by the worst-behaved (highest CV) of CPU and memory.
 	// A CV of 1.0 (stddev == mean) costs the full 0.3.
@@ -168,11 +172,25 @@ func Confidence(usage model.UsageStats) model.Confidence {
 	}
 	variancePenalty := 0.3 * clamp01(worstCV)
 
-	score := base + windowBonus + sampleBonus - variancePenalty
-
-	// A single snapshot can never be high-confidence.
-	if usage.Tier == model.TierSnapshot && score > 0.6 {
-		score = 0.6
+	var score float64
+	if usage.Tier == model.TierSnapshot || usage.Tier == model.TierStatic {
+		// A single snapshot / spec-only check does not accumulate over time, so maturity does
+		// not apply; the tier base already reflects its inherent (low) confidence.
+		score = base - variancePenalty
+		if usage.Tier == model.TierSnapshot && score > 0.6 {
+			score = 0.6 // a single snapshot can never be high-confidence
+		}
+	} else {
+		// Time-series tiers (operator, Prometheus, OpenCost): gate the tier's high base on how
+		// much real history backs it. maturity is the weakest of window- and sample-coverage,
+		// so BOTH enough elapsed time and enough samples are required to earn full confidence.
+		windowMaturity := clamp01(usage.Window.Hours() / matureWindowHours)
+		sampleMaturity := 0.0
+		if usage.Samples > 1 {
+			sampleMaturity = clamp01(math.Log10(float64(usage.Samples)) / math.Log10(matureSamples))
+		}
+		maturity := math.Min(windowMaturity, sampleMaturity)
+		score = immatureFloor + maturity*(base-immatureFloor) - variancePenalty
 	}
 
 	score = clamp(score, 0.05, 0.99)
@@ -224,11 +242,16 @@ func formatWindow(d time.Duration) string {
 	if d <= 0 {
 		return "0"
 	}
-	days := d.Hours() / 24
-	if days >= 1 {
+	if days := d.Hours() / 24; days >= 1 {
 		return fmt.Sprintf("%dd", int64(math.Round(days)))
 	}
-	return fmt.Sprintf("%dh", int64(math.Round(d.Hours())))
+	if d.Hours() >= 1 {
+		return fmt.Sprintf("%dh", int64(math.Round(d.Hours())))
+	}
+	if d.Minutes() >= 1 {
+		return fmt.Sprintf("%dm", int64(math.Round(d.Minutes())))
+	}
+	return "<1m"
 }
 
 func clamp(v, lo, hi float64) float64 {

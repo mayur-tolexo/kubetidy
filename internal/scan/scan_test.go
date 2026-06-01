@@ -239,3 +239,58 @@ func TestRun_SkipsContainersWithoutUsage(t *testing.T) {
 		t.Errorf("recommendation for %q, want app", res.Recommendations[0].ContainerName)
 	}
 }
+
+func TestDominantTier(t *testing.T) {
+	rec := func(tier model.EvidenceTier) model.Recommendation { return model.Recommendation{Tier: tier} }
+
+	if _, ok := dominantTier(nil); ok {
+		t.Error("empty recs should return ok=false")
+	}
+
+	// Plurality wins.
+	got, ok := dominantTier([]model.Recommendation{
+		rec(model.TierOperator), rec(model.TierOperator), rec(model.TierSnapshot),
+	})
+	if !ok || got != model.TierOperator {
+		t.Errorf("dominant = %v (ok=%v), want TierOperator", got, ok)
+	}
+
+	// All snapshot (the warm-up case): banner should read snapshot, not the provider's Tier 0.
+	got, _ = dominantTier([]model.Recommendation{rec(model.TierSnapshot), rec(model.TierSnapshot)})
+	if got != model.TierSnapshot {
+		t.Errorf("dominant = %v, want TierSnapshot", got)
+	}
+
+	// Tie breaks toward the higher tier.
+	got, _ = dominantTier([]model.Recommendation{rec(model.TierSnapshot), rec(model.TierHistorical)})
+	if got != model.TierHistorical {
+		t.Errorf("tie dominant = %v, want TierHistorical (higher)", got)
+	}
+}
+
+func TestRun_SnapshotCaveatBasedOnFindings(t *testing.T) {
+	w := model.Workload{
+		Kind: model.KindDeployment, Name: "web", Namespace: "shop", Replicas: 1,
+		Containers: []model.Container{{Name: "app", Requests: model.ResourceAmounts{CPUMillicores: 1000, MemoryBytes: 1 << 30}}},
+	}
+	stats := map[string]model.UsageStats{"app": {
+		CPUMillicores: model.Percentiles{P95: 10}, MemoryBytes: model.Percentiles{Max: 32 << 20},
+		Samples: 1, Tier: model.TierSnapshot,
+	}}
+	eng := &Engine{
+		Workloads: []model.Workload{w},
+		Usage:     &fakeUsage{tier: model.TierSnapshot, usageByRef: map[string]map[string]model.UsageStats{w.Ref(): stats}},
+		Price:     &fakePricing{price: model.ResourcePrice{CPUCoreMonth: 30, MemGiBMonth: 4}},
+		Policy:    model.DefaultPolicy(),
+	}
+	res, err := eng.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Tier != model.TierSnapshot {
+		t.Errorf("Tier = %v, want TierSnapshot", res.Tier)
+	}
+	if len(res.Warnings) == 0 || !strings.Contains(res.Warnings[0], "snapshot") {
+		t.Errorf("want a leading snapshot caveat, got %v", res.Warnings)
+	}
+}

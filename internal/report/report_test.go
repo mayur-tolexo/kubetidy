@@ -172,8 +172,8 @@ func TestTableRecommendationRow(t *testing.T) {
 	if !strings.Contains(out, "$210/mo") {
 		t.Errorf("missing savings\n--- got ---\n%s", out)
 	}
-	if !strings.Contains(out, "96%") {
-		t.Errorf("missing confidence\n--- got ---\n%s", out)
+	if !strings.Contains(out, "█ high") {
+		t.Errorf("missing confidence band\n--- got ---\n%s", out)
 	}
 	// Evidence is indented under the row with the └ marker.
 	if !strings.Contains(out, "    └ P95 cpu 280m") {
@@ -256,7 +256,7 @@ func TestTableLegendShown(t *testing.T) {
 		t.Fatalf("Table: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "conf = confidence in this recommendation") {
+	if !strings.Contains(out, "CONF = confidence:") {
 		t.Errorf("missing legend\n--- got ---\n%s", out)
 	}
 }
@@ -328,7 +328,7 @@ func TestExplain(t *testing.T) {
 		"cpu:  2000m → 320m",
 		"mem:  4Gi → 1.1Gi",
 		"savings:  $210 / month",
-		"confidence:  96% (tier 1, 14d, low variance)",
+		"confidence:  high (96%) — tier 1, 14d, low variance",
 		"tier:  1 (Prometheus)",
 		"evidence:  P95 cpu 280m",
 		"derivation:",

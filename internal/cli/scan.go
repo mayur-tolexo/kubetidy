@@ -156,7 +156,9 @@ func selectUsageProvider(clients *kube.Clients, f *scanFlags, warnings *[]string
 	// so workloads the operator has not profiled yet are still covered (no coverage regression
 	// while the operator warms up).
 	if usage.DetectOperator(clients.Dynamic) {
-		*warnings = append(*warnings, "using kubetidy operator history (Tier 0); metrics-server snapshot covers any not-yet-profiled workloads")
+		// No note here: the data banner already states the tier, and the per-recommendation
+		// evidence line shows which workloads (if any) fell back to a snapshot. A blanket
+		// "using operator history" note overclaims while the operator is still warming up.
 		return usage.NewFallbackProvider(
 			usage.NewOperatorProvider(clients.Dynamic),
 			usage.NewMetricsServerProvider(clients.Metrics),
