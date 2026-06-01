@@ -51,27 +51,43 @@ metrics-server snapshot (a conservative fallback). All are auto-detected; no fla
 
 ## Install
 
-> Packaging via **krew** (`kubectl krew install tidy`), **Homebrew**, and `curl | sh` is on
-> the [roadmap](ROADMAP.md). For now, build from source.
+Pick whichever fits. All three install the same single binary, usable as both `kubetidy` and
+the `kubectl tidy` plugin.
 
-Requires **Go 1.26+**.
+**krew** (the kubectl plugin manager) — recommended for `kubectl tidy`:
+
+```sh
+# until kubetidy lands in the central krew-index, install from the release manifest:
+kubectl krew install --manifest-url \
+  https://github.com/mayur-tolexo/kubetidy/releases/latest/download/kubetidy.yaml
+kubectl tidy scan
+```
+
+**curl | sh** — standalone binary, no Go toolchain needed (Linux/macOS, amd64/arm64):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mayur-tolexo/kubetidy/main/install.sh | sh
+```
+
+It downloads the latest release, verifies its checksum, and installs both `kubetidy` and
+`kubectl-tidy` to `/usr/local/bin` (or `~/.local/bin`). Override with `KUBETIDY_VERSION`,
+`KUBETIDY_BIN_DIR`, or `KUBETIDY_NO_PLUGIN=1`.
+
+**Pre-built archives** — grab a tarball/zip for your platform from the
+[releases page](https://github.com/mayur-tolexo/kubetidy/releases), extract, and put
+`kubetidy` on your `PATH` (copy it to `kubectl-tidy` too for the plugin form).
+
+**From source** (requires **Go 1.26+**):
 
 ```sh
 git clone https://github.com/mayur-tolexo/kubetidy.git
 cd kubetidy
 make build          # produces ./bin/kubetidy and ./bin/kubectl-tidy
-```
-
-Put the binaries on your `PATH`. As soon as `kubectl-tidy` is on `PATH`, the kubectl plugin
-form works:
-
-```sh
 sudo cp ./bin/kubetidy ./bin/kubectl-tidy /usr/local/bin/
-kubectl tidy scan
 ```
 
-kubetidy inherits your current kubeconfig context and namespace, exactly like any other
-kubectl plugin.
+As soon as `kubectl-tidy` is on your `PATH`, `kubectl tidy ...` works. kubetidy inherits your
+current kubeconfig context and namespace, exactly like any other kubectl plugin.
 
 ## One-command setup: `kubectl tidy init`
 
@@ -181,6 +197,8 @@ Run `make help` to see everything. The common ones:
 | `make lint` | Run golangci-lint (installs it if missing) |
 | `make check` | Full pre-PR gate: tests + vet + gofmt + lint |
 | `make e2e` / `make e2e-prom` | Full local demo (with / without Prometheus) |
+| `make release-check` | Validate the GoReleaser config |
+| `make release-snapshot` | Build all release archives + krew manifest into `./dist` (no publish) |
 | `make operator-deploy` | Build + deploy the kubetidy operator (Tier 0, no Prometheus) |
 | `make prometheus` | Deploy a minimal Prometheus (unlocks Tier 1) |
 | `make kind-up` / `make kind-down` | Create / delete the kind cluster |

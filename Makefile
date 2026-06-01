@@ -81,6 +81,19 @@ install: build ## Build and copy both faces onto your PATH (/usr/local/bin, may 
 run: build ## Build then run a scan against the current kube context
 	$(BIN_DIR)/kubetidy scan
 
+# --- release tooling (GoReleaser + krew) ------------------------------------------------------
+GORELEASER ?= go run github.com/goreleaser/goreleaser/v2@latest
+
+.PHONY: release-check
+release-check: ## Validate the GoReleaser config (.goreleaser.yaml)
+	$(GORELEASER) check
+
+.PHONY: release-snapshot
+release-snapshot: ## Build all release archives locally into ./dist (no publish), then render the krew manifest
+	$(GORELEASER) release --snapshot --clean
+	@scripts/gen-krew-manifest.sh v0.0.0-snapshot dist/checksums.txt .krew.yaml.tmpl dist/kubetidy.yaml
+	@echo "release artifacts + dist/kubetidy.yaml written to ./dist"
+
 .PHONY: clean
 clean: ## Remove build output and coverage files
 	rm -rf $(BIN_DIR) coverage.out coverage.html
