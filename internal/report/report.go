@@ -199,7 +199,7 @@ func writeRecommendations(b *strings.Builder, recs []model.Recommendation, opts 
 func writeLegend(b *strings.Builder, opts Options) {
 	lines := []string{
 		"CPU/MEM = current → proposed request · SAVINGS = $/mo (↑ grow = reliability, not a saving)",
-		"CONF = confidence: ▒ low · ▓ med · █ high — grows with data history (tier, window, samples). --explain shows the %.",
+		"CONF = confidence: ▒ low · ▓ med · █ high + score% — grows with data history (tier, window, samples).",
 	}
 	for _, l := range lines {
 		if opts.Color {
@@ -234,18 +234,20 @@ func savingsCell(rec model.Recommendation) string {
 	return fmt.Sprintf("%s/mo", formatDollarsAbs(rec.MonthlySavings))
 }
 
-// confidenceCell renders the qualitative confidence band with a shaded glyph that reads as a
-// fill level even without color. A precise percentage is intentionally omitted here (it implies
-// false precision); the number is available under --explain.
+// confidenceCell renders the confidence as a shaded band glyph (a fill level readable without
+// color) + the band label + the score percent, e.g. "▒ low 31%". The band leads so the column
+// scans at a glance; the percent gives the precise score for those who want it.
 func confidenceCell(rec model.Recommendation) string {
+	var glyph, label string
 	switch rec.Confidence.Band() {
 	case model.ConfidenceHigh:
-		return "█ high"
+		glyph, label = "█", "high"
 	case model.ConfidenceMedium:
-		return "▓ med"
+		glyph, label = "▓", "med"
 	default:
-		return "▒ low"
+		glyph, label = "▒", "low"
 	}
+	return fmt.Sprintf("%s %s %d%%", glyph, label, rec.Confidence.Percent())
 }
 
 // JSON renders a stable machine-readable schema of the scan result.
