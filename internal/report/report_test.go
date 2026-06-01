@@ -181,8 +181,8 @@ func TestTableRecommendationRow(t *testing.T) {
 	if !strings.Contains(out, "$210/mo") {
 		t.Errorf("missing savings\n--- got ---\n%s", out)
 	}
-	if !strings.Contains(out, "█ high") {
-		t.Errorf("missing confidence band\n--- got ---\n%s", out)
+	if !strings.Contains(out, "█ high 96%") {
+		t.Errorf("missing confidence band + percent\n--- got ---\n%s", out)
 	}
 	// The table is one clean line per workload — the dense per-row evidence line was removed
 	// (it now lives under --explain), so it must NOT appear here.
