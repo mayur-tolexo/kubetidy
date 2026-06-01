@@ -11,7 +11,7 @@ DATE       ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS    := -s -w -X $(PKG)/internal/version.Version=$(VERSION) -X $(PKG)/internal/version.Commit=$(COMMIT) -X $(PKG)/internal/version.Date=$(DATE)
 
 GOLANGCI_LINT ?= $(shell go env GOPATH)/bin/golangci-lint
-GOLANGCI_VERSION ?= v2.6.0
+GOLANGCI_VERSION ?= v2.12.2
 
 CONTROLLER_GEN ?= $(shell go env GOPATH)/bin/controller-gen
 CONTROLLER_GEN_VERSION ?= v0.16.5
