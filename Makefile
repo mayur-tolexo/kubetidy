@@ -13,6 +13,9 @@ LDFLAGS    := -s -w -X $(PKG)/internal/version.Version=$(VERSION) -X $(PKG)/inte
 GOLANGCI_LINT ?= $(shell go env GOPATH)/bin/golangci-lint
 GOLANGCI_VERSION ?= v2.6.0
 
+CONTROLLER_GEN ?= $(shell go env GOPATH)/bin/controller-gen
+CONTROLLER_GEN_VERSION ?= v0.16.5
+
 # operator image (Docker Hub). The image is always Linux; PUSH_PLATFORMS is multi-arch so it
 # runs on amd64 clusters and arm64 (Apple-Silicon kind / Graviton) alike. LOCAL_PLATFORM is
 # the single Linux arch used for a local kind load (defaults to the host's arch).
@@ -49,6 +52,17 @@ help: ## Show this help
 .PHONY: deps
 deps: ## Download and tidy module dependencies
 	go mod tidy
+
+.PHONY: generate
+generate: ## Regenerate CRDs + DeepCopy from api/ markers (controller-gen)
+	@command -v $(CONTROLLER_GEN) >/dev/null 2>&1 || \
+		go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
+	$(CONTROLLER_GEN) object paths=./api/...
+	$(CONTROLLER_GEN) crd:allowDangerousTypes=true paths=./api/... output:crd:dir=config/crd
+	@cp config/crd/kubetidy.io_usageprofiles.yaml internal/installer/assets/usageprofiles.yaml
+	@cp config/crd/kubetidy.io_clusterusagesummaries.yaml internal/installer/assets/clusterusagesummaries.yaml
+	@cp config/crd/kubetidy.io_recommendations.yaml internal/installer/assets/recommendations.yaml
+	@echo "regenerated CRDs + deepcopy; copied CRDs into installer assets"
 
 .PHONY: build
 build: ## Build the binary as both kubetidy and kubectl-tidy into ./bin

@@ -31,10 +31,33 @@ import (
 )
 
 //go:embed assets/usageprofiles.yaml
-var crdManifest []byte
+var usageProfileCRD []byte
+
+//go:embed assets/clusterusagesummaries.yaml
+var clusterUsageSummaryCRD []byte
+
+//go:embed assets/recommendations.yaml
+var recommendationCRD []byte
 
 //go:embed assets/operator.yaml
 var operatorManifest []byte
+
+// crdManifest is the concatenation of all kubetidy CRDs, applied together by init. The
+// UsageProfile CRD is first so we can wait on it specifically before deploying the operator.
+var crdManifest = joinManifests(usageProfileCRD, clusterUsageSummaryCRD, recommendationCRD)
+
+// joinManifests concatenates YAML documents with a separator so they decode as a multi-doc
+// stream.
+func joinManifests(docs ...[]byte) []byte {
+	var out []byte
+	for i, d := range docs {
+		if i > 0 {
+			out = append(out, []byte("\n---\n")...)
+		}
+		out = append(out, d...)
+	}
+	return out
+}
 
 // fieldManager identifies kubetidy as the owner of the fields it applies (server-side apply).
 const fieldManager = "kubetidy"
@@ -79,13 +102,19 @@ func Install(ctx context.Context, dyn dynamic.Interface, disco discovery.Discove
 		return fmt.Errorf("installer: building REST mapper: %w", err)
 	}
 
-	opts.log("applying UsageProfile CRD")
+	opts.log("applying kubetidy CRDs (UsageProfile, ClusterUsageSummary, Recommendation)")
 	if err := applyManifest(ctx, dyn, mapper, crdManifest); err != nil {
 		return err
 	}
-	opts.log("waiting for CRD to become established")
-	if err := waitCRDEstablished(ctx, dyn, "usageprofiles.kubetidy.io"); err != nil {
-		return err
+	opts.log("waiting for CRDs to become established")
+	for _, name := range []string{
+		"usageprofiles.kubetidy.io",
+		"clusterusagesummaries.kubetidy.io",
+		"recommendations.kubetidy.io",
+	} {
+		if err := waitCRDEstablished(ctx, dyn, name); err != nil {
+			return err
+		}
 	}
 
 	if !opts.IncludeOperator {
@@ -105,8 +134,8 @@ func Install(ctx context.Context, dyn dynamic.Interface, disco discovery.Discove
 	return nil
 }
 
-// CRDManifest returns the embedded UsageProfile CRD YAML, for callers that want to print it
-// (e.g. `init --print`) instead of applying it.
+// CRDManifest returns the embedded kubetidy CRD YAML (all three CRDs), for callers that want
+// to print it (e.g. `init --print`) instead of applying it.
 func CRDManifest() []byte { return crdManifest }
 
 // OperatorManifest returns the embedded operator (namespace, RBAC, Deployment) YAML, for

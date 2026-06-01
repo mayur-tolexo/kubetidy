@@ -1,0 +1,138 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: clusterusagesummaries.kubetidy.io
+spec:
+  group: kubetidy.io
+  names:
+    kind: ClusterUsageSummary
+    listKind: ClusterUsageSummaryList
+    plural: clusterusagesummaries
+    shortNames:
+    - cus
+    singular: clusterusagesummary
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.efficiencyScore
+      name: Score
+      type: integer
+    - jsonPath: .status.wastedMonthlyCost
+      name: Wasted/mo
+      type: number
+    - jsonPath: .status.workloadCount
+      name: Workloads
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          ClusterUsageSummary is a per-cluster rollup of usage, cost, and improvement opportunities —
+          the stable, typed view external products read for a per-cluster dashboard.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              ClusterUsageSummarySpec selects what the summary covers. An empty Scope means the whole
+              cluster.
+            properties:
+              scope:
+                description: Scope optionally narrows the summary (e.g. a namespace).
+                  Empty = whole cluster.
+                type: string
+            type: object
+          status:
+            description: |-
+              ClusterUsageSummaryStatus is the operator-maintained per-cluster rollup that external
+              consumers (dashboards, Cluster API) read for a usage/cost/improvement view.
+            properties:
+              efficiencyScore:
+                description: EfficiencyScore is the 0..100 cluster efficiency score.
+                type: integer
+              extensions:
+                additionalProperties:
+                  type: string
+                description: Extensions is an open key/value area for experimental
+                  or vendor data.
+                type: object
+              generatedAt:
+                description: GeneratedAt is when this summary was computed (RFC3339).
+                type: string
+              topTargets:
+                description: TopTargets lists the highest-impact rightsizing opportunities,
+                  ranked by savings.
+                items:
+                  description: |-
+                    WorkloadTarget is one workload's contribution to the cluster rollup: the improvement
+                    opportunity dashboards and Cluster API integrations surface per workload.
+                  properties:
+                    confidence:
+                      description: Confidence is the 0..100 confidence in this workload's
+                        recommendation.
+                      type: integer
+                    monthlySavings:
+                      description: MonthlySavings is the estimated $/month recoverable
+                        by rightsizing this workload.
+                      type: number
+                    namespace:
+                      description: Namespace is the workload's namespace.
+                      type: string
+                    targetRef:
+                      description: TargetRef identifies the workload.
+                      properties:
+                        kind:
+                          description: Kind is the workload controller kind (Deployment,
+                            StatefulSet, DaemonSet).
+                          type: string
+                        name:
+                          description: Name is the workload's name.
+                          type: string
+                      required:
+                      - kind
+                      - name
+                      type: object
+                  required:
+                  - monthlySavings
+                  - namespace
+                  - targetRef
+                  type: object
+                type: array
+              totalMonthlyCost:
+                description: TotalMonthlyCost is the estimated current spend ($/month)
+                  across covered workloads.
+                type: number
+              wastedMonthlyCost:
+                description: WastedMonthlyCost is the estimated recoverable spend
+                  ($/month).
+                type: number
+              workloadCount:
+                description: WorkloadCount is the number of workloads considered.
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
