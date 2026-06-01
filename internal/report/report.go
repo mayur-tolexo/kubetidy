@@ -102,6 +102,9 @@ func writeBanner(b *strings.Builder, result model.ScanResult, opts Options) {
 		ctx = "(no context)"
 	}
 	banner := fmt.Sprintf("kubetidy · %s  ·  data: %s", ctx, result.Tier.String())
+	if w := observedWindow(result); w > 0 {
+		banner += fmt.Sprintf("  ·  observed over %s", formatWindow(w))
+	}
 	if opts.Color {
 		fmt.Fprintf(b, "%s%s%s\n", ansiBold+ansiCyan, banner, ansiReset)
 	} else {
@@ -162,7 +165,7 @@ func writeRecommendations(b *strings.Builder, recs []model.Recommendation, opts 
 	var buf strings.Builder
 	tw := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
 	// Flushing to an in-memory strings.Builder cannot fail.
-	_, _ = fmt.Fprintf(tw, "  WORKLOAD\tREQUESTED\tUSES\tPROPOSED\tSAVE\tCONF\n")
+	_, _ = fmt.Fprintf(tw, "  WORKLOAD\tREQUESTED\tUSES (cpu p95 · mem peak)\tPROPOSED\tSAVE\tCONF (samples)\n")
 	for _, rec := range recs {
 		_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\n",
 			workloadLabel(rec),
@@ -195,8 +198,8 @@ func writeRecommendations(b *strings.Builder, recs []model.Recommendation, opts 
 // writeLegend emits the short column/confidence legend footer.
 func writeLegend(b *strings.Builder, opts Options) {
 	lines := []string{
-		"columns are cpu/mem · USES = p95 cpu / peak mem (what PROPOSED is sized to) · SAVE = $/mo (↑ grow = reliability)",
-		"CONF = confidence: ▒ low · ▓ med · █ high + score% — grows with data history (tier, window, samples).",
+		"values are cpu/mem · USES (p95 cpu / peak mem) is what PROPOSED is sized to · SAVE = $/mo (↑ grow = reliability)",
+		"CONF = confidence ▒ low · ▓ med · █ high (score% · samples) — grows with data history.",
 		"→ run  kubetidy scan --explain <workload>  to see the full usage distribution (avg/p95/p99/peak).",
 	}
 	for _, l := range lines {
@@ -258,7 +261,25 @@ func confidenceCell(rec model.Recommendation) string {
 	default:
 		glyph, label = "▒", "low"
 	}
-	return fmt.Sprintf("%s %s %d%%", glyph, label, rec.Confidence.Percent())
+	cell := fmt.Sprintf("%s %s %d%%", glyph, label, rec.Confidence.Percent())
+	// Append the sample count backing this recommendation — the data provenance the confidence
+	// is built on, so a "low" reads as "low, because only N samples so far".
+	if n := rec.Usage.Samples; n > 0 {
+		cell += fmt.Sprintf(" · %s smp", formatCount(n))
+	}
+	return cell
+}
+
+// observedWindow returns the longest observation window across the recommendations — the
+// data's time span, shown in the banner. Zero (snapshot/static) means "no window".
+func observedWindow(result model.ScanResult) time.Duration {
+	var longest time.Duration
+	for _, r := range result.Recommendations {
+		if r.Usage.Window > longest {
+			longest = r.Usage.Window
+		}
+	}
+	return longest
 }
 
 // JSON renders a stable machine-readable schema of the scan result.

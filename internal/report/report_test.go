@@ -267,7 +267,7 @@ func TestTableLegendShown(t *testing.T) {
 		t.Fatalf("Table: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "CONF = confidence:") {
+	if !strings.Contains(out, "CONF = confidence") {
 		t.Errorf("missing legend\n--- got ---\n%s", out)
 	}
 }
