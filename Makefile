@@ -13,9 +13,13 @@ LDFLAGS    := -s -w -X $(PKG)/internal/version.Version=$(VERSION) -X $(PKG)/inte
 GOLANGCI_LINT ?= $(shell go env GOPATH)/bin/golangci-lint
 GOLANGCI_VERSION ?= v2.6.0
 
-# operator image (Docker Hub)
-OPERATOR_IMAGE ?= docker.io/mayurdas1991/kubetidy-operator
-OPERATOR_TAG   ?= latest
+# operator image (Docker Hub). The image is always Linux; PUSH_PLATFORMS is multi-arch so it
+# runs on amd64 clusters and arm64 (Apple-Silicon kind / Graviton) alike. LOCAL_PLATFORM is
+# the single Linux arch used for a local kind load (defaults to the host's arch).
+OPERATOR_IMAGE  ?= docker.io/mayurdas1991/kubetidy-operator
+OPERATOR_TAG    ?= latest
+PUSH_PLATFORMS  ?= linux/amd64,linux/arm64
+LOCAL_PLATFORM  ?= linux/$(shell go env GOARCH)
 
 # kind / demo settings
 KIND_CLUSTER   := kubetidy
@@ -142,18 +146,21 @@ crd-install: ## Install just the UsageProfile CRD into the kind cluster
 	kubectl --context kind-$(KIND_CLUSTER) apply -f config/crd/usageprofiles.yaml
 
 .PHONY: operator-image
-operator-image: ## Build the operator container image ($(OPERATOR_IMAGE):$(OPERATOR_TAG))
-	docker build -t $(OPERATOR_IMAGE):$(OPERATOR_TAG) -f hack/operator/Dockerfile .
-	@echo "built image $(OPERATOR_IMAGE):$(OPERATOR_TAG)"
+operator-image: ## Build the operator image for the local Linux arch and load it into Docker
+	docker buildx build --platform $(LOCAL_PLATFORM) --load \
+		-t $(OPERATOR_IMAGE):$(OPERATOR_TAG) -f hack/operator/Dockerfile .
+	@echo "built $(LOCAL_PLATFORM) image $(OPERATOR_IMAGE):$(OPERATOR_TAG)"
 
 .PHONY: operator-push
-operator-push: operator-image ## Build and push the operator image to Docker Hub (run `docker login` first)
-	docker push $(OPERATOR_IMAGE):$(OPERATOR_TAG)
-	@echo "pushed $(OPERATOR_IMAGE):$(OPERATOR_TAG) — clusters can now `kubectl tidy init`"
+operator-push: ## Build a multi-arch Linux image and push to Docker Hub (run `docker login` first)
+	docker buildx build --platform $(PUSH_PLATFORMS) --push \
+		-t $(OPERATOR_IMAGE):$(OPERATOR_TAG) -f hack/operator/Dockerfile .
+	@echo "pushed $(PUSH_PLATFORMS) image $(OPERATOR_IMAGE):$(OPERATOR_TAG) — clusters can now run kubectl tidy init"
 
 .PHONY: operator-deploy
 operator-deploy: ## Build, load, and deploy the kubetidy operator into the kind cluster (Tier 0)
-	docker build -t $(OPERATOR_IMAGE):$(OPERATOR_TAG) -f hack/operator/Dockerfile .
+	docker buildx build --platform $(LOCAL_PLATFORM) --load \
+		-t $(OPERATOR_IMAGE):$(OPERATOR_TAG) -f hack/operator/Dockerfile .
 	kind load docker-image $(OPERATOR_IMAGE):$(OPERATOR_TAG) --name $(KIND_CLUSTER)
 	kubectl --context kind-$(KIND_CLUSTER) apply -f config/crd/usageprofiles.yaml
 	kubectl --context kind-$(KIND_CLUSTER) apply -f config/operator/operator.yaml

@@ -88,9 +88,11 @@ kubectl tidy init --image REPO/kubetidy-operator:TAG   # pin a custom operator i
 `init` applies the CRD first, waits for it to become Established, then deploys the operator.
 It is idempotent — re-run it any time to converge the cluster to the embedded manifests.
 
-The operator runs from the published image `docker.io/mayurdas1991/kubetidy-operator:latest`.
-Maintainers publish it with `make operator-push` (after `docker login`); pass `--image` to
-`init` to use a fork or a pinned version tag instead.
+The operator runs from the published image `docker.io/mayurdas1991/kubetidy-operator:latest` —
+a **multi-arch Linux image** (`linux/amd64` + `linux/arm64`) that runs in kind and in any
+Kubernetes cluster. Maintainers publish it with `make operator-push` (after `docker login`;
+requires Docker buildx). Pass `--image` to `init` to use a fork or a pinned version tag
+instead.
 
 ## High-confidence scans without Prometheus — the operator (Tier 0)
 
