@@ -15,10 +15,12 @@ import (
 )
 
 type initFlags struct {
-	kubeContext string
-	crdOnly     bool
-	printOnly   bool
-	image       string
+	kubeContext   string
+	crdOnly       bool
+	printOnly     bool
+	image         string
+	withOpenCost  bool
+	prometheusURL string
 }
 
 // discoveryFor is a seam so tests can substitute the discovery client. In production it builds
@@ -60,6 +62,8 @@ func newInitCommand() *cobra.Command {
 	flags.BoolVar(&f.crdOnly, "crd-only", false, "install only the UsageProfile CRD, not the operator")
 	flags.BoolVar(&f.printOnly, "print", false, "print the manifests that would be applied, and exit")
 	flags.StringVar(&f.image, "image", "", "operator container image to deploy (required on a real cluster; the embedded default is a local kind-only tag)")
+	flags.BoolVar(&f.withOpenCost, "with-opencost", false, "also deploy OpenCost (needs Prometheus) so scans get precise Tier-2 cost out of the box")
+	flags.StringVar(&f.prometheusURL, "prometheus-url", "", "Prometheus endpoint OpenCost reads from (with --with-opencost; default http://prometheus-server.monitoring.svc:80)")
 	return cmd
 }
 
@@ -76,6 +80,10 @@ func runInit(ctx context.Context, f *initFlags) error {
 			b.WriteString("---\n")
 			b.Write(installer.OperatorManifest())
 		}
+		if f.withOpenCost {
+			b.WriteString("---\n")
+			b.Write(installer.OpenCostManifest(f.prometheusURL))
+		}
 		_, err := io.WriteString(os.Stdout, b.String())
 		return err
 	}
@@ -91,6 +99,8 @@ func runInit(ctx context.Context, f *initFlags) error {
 
 	opts := installer.Options{
 		IncludeOperator: !f.crdOnly,
+		IncludeOpenCost: f.withOpenCost,
+		PrometheusURL:   f.prometheusURL,
 		Image:           f.image,
 		Log:             func(msg string) { _, _ = fmt.Fprintln(os.Stdout, "•", msg) },
 	}
@@ -98,8 +108,12 @@ func runInit(ctx context.Context, f *initFlags) error {
 		return err
 	}
 
-	_, err = io.WriteString(os.Stdout,
-		"\n✓ kubetidy installed. The operator needs a few minutes to accumulate history;\n"+
-			"  after that, `kubectl tidy scan` runs at Tier 0 with no Prometheus.\n")
+	msg := "\n✓ kubetidy installed. The operator needs a few minutes to accumulate history;\n" +
+		"  after that, `kubectl tidy scan` runs at Tier 0 with no Prometheus.\n"
+	if f.withOpenCost {
+		msg += "  OpenCost is deploying in the opencost namespace; once it's ready, scans show\n" +
+			"  precise Tier-2 cost from your cluster's actual node pricing.\n"
+	}
+	_, err = io.WriteString(os.Stdout, msg)
 	return err
 }

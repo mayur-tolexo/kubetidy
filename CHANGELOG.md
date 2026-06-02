@@ -8,6 +8,12 @@ fixes/UX).
 ## [Unreleased]
 
 ### Added
+- **`kubetidy init --with-opencost`** — optionally deploy OpenCost into the cluster (namespace,
+  RBAC, deployment, service; embedded manifests) so scans get precise Tier-2 cost out of the box.
+  OpenCost reads usage from Prometheus; point it with `--prometheus-url` (defaults to
+  `http://prometheus-server.monitoring.svc:80`). `kubetidy uninstall --with-opencost` removes it
+  again (off by default, so a user's own OpenCost is never touched). `init --print --with-opencost`
+  emits the manifests for GitOps instead of applying them.
 - **`kubetidy cost`** — the CI cost-guardrail. Prices CPU/memory requests in manifests (no
   cluster) and, with `--base`/`--head`, reports the monthly $ a change adds or saves
   ("this change adds $88/mo"); `--fail-over <budget>` fails CI on a net increase. Example

@@ -14,10 +14,11 @@ import (
 )
 
 type uninstallFlags struct {
-	kubeContext string
-	keepCRDs    bool
-	yes         bool
-	dryRun      bool
+	kubeContext  string
+	keepCRDs     bool
+	withOpenCost bool
+	yes          bool
+	dryRun       bool
 }
 
 // confirmReader is the input used for the interactive confirmation prompt; overridable in
@@ -43,6 +44,7 @@ func newUninstallCommand() *cobra.Command {
 	flags := cmd.Flags()
 	flags.StringVar(&f.kubeContext, "context", "", "kubeconfig context to use")
 	flags.BoolVar(&f.keepCRDs, "keep-crds", false, "remove only the operator; keep the CRDs and recorded data")
+	flags.BoolVar(&f.withOpenCost, "with-opencost", false, "also remove the OpenCost deployment kubetidy installed with init --with-opencost")
 	flags.BoolVar(&f.dryRun, "dry-run", false, "list what would be removed without deleting anything")
 	flags.BoolVarP(&f.yes, "yes", "y", false, "skip the confirmation prompt")
 	return cmd
@@ -76,9 +78,10 @@ func runUninstall(ctx context.Context, f *uninstallFlags) error {
 
 	logf := func(msg string) { _, _ = fmt.Fprintln(os.Stdout, "•", msg) }
 	if err := installer.Uninstall(ctx, dyn, disco, installer.UninstallOptions{
-		KeepCRDs: f.keepCRDs,
-		DryRun:   f.dryRun,
-		Log:      logf,
+		KeepCRDs:        f.keepCRDs,
+		IncludeOpenCost: f.withOpenCost,
+		DryRun:          f.dryRun,
+		Log:             logf,
 	}); err != nil {
 		return err
 	}
