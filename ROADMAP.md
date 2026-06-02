@@ -48,11 +48,12 @@ This roadmap is intentionally public and open for discussion — please weigh in
       no Prometheus (the real Tier 0). The first, safe increment of the operator. See
       [docs/design/operator.md](docs/design/operator.md).
 - [x] **`kubectl tidy init`** — install the CRD + operator from manifests embedded in the
-      binary; no manual `kubectl apply`. `--with-opencost` also deploys OpenCost (the producer
-      side of Tier 2) so precise cost works out of the box; `uninstall --with-opencost` reverses it.
+      binary; no manual `kubectl apply`. `--with-opencost` deploys the **whole Tier-2 stack**
+      (OpenCost + a bundled Prometheus when none exists); `--with-prometheus` deploys just
+      Prometheus (Tier 1). `uninstall --with-opencost/--with-prometheus` reverse them.
 - [ ] Guarded `apply` with auto-rollback on SLO regression
 - [x] Tier 2: OpenCost integration for precise allocated cost — consume an existing OpenCost
-      (auto-detected, or `--opencost-url`) **or deploy one** with `init --with-opencost`
+      (auto-detected, or `--opencost-url`) **or deploy the full stack** with `init --with-opencost`
 - [x] **Recommendation CRDs** — the operator writes a per-workload `Recommendation` (the LLM
       target; rules-engine source today). Multi-cluster aggregation still to come.
 - [x] **Confidence that grows with data** — recommendations are graded low/med/high and gated

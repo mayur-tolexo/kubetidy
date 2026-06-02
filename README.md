@@ -54,8 +54,9 @@ Tier 1 works on **any cluster** with no cost dependency — the dollar figure is
 blended cloud pricing (override with `--cpu-cost` / `--mem-cost`). Tier 2 kicks in when an
 in-cluster **OpenCost** is present (it needs Prometheus, which is why it sits above Tier 1):
 kubetidy auto-detects it and replaces the derived prices with real allocated cost. Point at one
-explicitly with `--opencost-url`, or let kubetidy deploy it for you with
-`kubectl tidy init --with-opencost` (see [setup](#one-command-setup-kubectl-tidy-init)).
+explicitly with `--opencost-url`, or let kubetidy deploy the whole stack (OpenCost **and** a
+Prometheus if you lack one) with `kubectl tidy init --with-opencost` (see
+[setup](#one-command-setup-kubectl-tidy-init)).
 
 Within Tier 1, kubetidy auto-detects the best **usage** source — Prometheus or the kubetidy
 operator (historical, high-confidence) over a bare metrics-server snapshot (a conservative
@@ -112,7 +113,8 @@ kubectl tidy init                 # install the CRD + operator (server-side appl
 kubectl tidy init --crd-only      # just the CRD (e.g. GitOps manages the Deployment)
 kubectl tidy init --print         # print the manifests instead of applying them
 kubectl tidy init --image REPO/kubetidy-operator:TAG   # pin a custom operator image
-kubectl tidy init --with-opencost # also deploy OpenCost for precise Tier-2 cost (needs Prometheus)
+kubectl tidy init --with-opencost # full Tier-2 cost stack: OpenCost + a bundled Prometheus
+kubectl tidy init --with-prometheus # just a minimal Prometheus (unlocks Tier-1 history)
 ```
 
 `init` applies the CRD first, waits for it to become Established, then deploys the operator.
@@ -120,20 +122,30 @@ It is idempotent — re-run it any time to converge the cluster to the embedded 
 
 ### Precise cost out of the box: `--with-opencost`
 
-`--with-opencost` additionally deploys [OpenCost](https://www.opencost.io/) (namespace, RBAC,
-deployment, and service — all embedded) so scans report **precise Tier-2 cost** from your
-cluster's actual node pricing (spot / reserved / committed-use discounts included), instead of
-blended derived pricing. kubetidy auto-detects the deployed OpenCost at `opencost.opencost.svc:9003`.
+`--with-opencost` deploys a complete **Tier-2 cost stack** from embedded manifests, so scans
+report **precise allocated cost** from your cluster's actual node pricing (spot / reserved /
+committed-use discounts included) instead of blended derived pricing:
 
-OpenCost reads usage from Prometheus, so point it at yours:
+- [OpenCost](https://www.opencost.io/) (namespace, RBAC, deployment, service) — kubetidy
+  auto-detects it at `opencost.opencost.svc:9003`.
+- OpenCost needs Prometheus, so **if you don't already run one, init also deploys a minimal
+  bundled Prometheus** (the `monitoring` namespace, scraping kubelet/cAdvisor) at
+  `prometheus-server.monitoring.svc:80`. One command, no prerequisites.
 
 ```sh
+kubectl tidy init --with-opencost                          # OpenCost + bundled Prometheus
 kubectl tidy init --with-opencost \
-  --prometheus-url http://prometheus-server.monitoring.svc:80   # this is the default
+  --prometheus-url http://my-prometheus.monitoring.svc:9090 # use YOUR Prometheus (skips the bundle)
 ```
 
-`--print --with-opencost` emits the OpenCost manifests too, for GitOps. To remove it later,
-`kubectl tidy uninstall --with-opencost` (off by default, so your own OpenCost is never touched).
+The bundled Prometheus is deliberately minimal: a single replica with **ephemeral storage** and
+a 15-day window. It's perfect for getting cost working immediately; for durable, production-grade
+metrics run your own Prometheus and pass `--prometheus-url`. Want only Tier-1 history (no cost)?
+`kubectl tidy init --with-prometheus` deploys just the Prometheus.
+
+`--print` includes whatever `--with-*` flags you pass, for GitOps. To remove these later:
+`kubectl tidy uninstall --with-opencost --with-prometheus` (both off by default, so your own
+OpenCost/Prometheus is never touched; the shared `monitoring` namespace is preserved).
 
 To remove everything `init` created, use its inverse:
 
@@ -143,6 +155,7 @@ kubectl tidy uninstall --dry-run    # list exactly what would be removed; delete
 kubectl tidy uninstall --yes        # skip the confirmation prompt
 kubectl tidy uninstall --keep-crds  # remove only the operator; keep the CRDs and history
 kubectl tidy uninstall --with-opencost  # also remove OpenCost installed via init --with-opencost
+kubectl tidy uninstall --with-prometheus # also remove the bundled Prometheus (keeps the namespace)
 kubectl tidy cleanup                # alias for uninstall
 ```
 

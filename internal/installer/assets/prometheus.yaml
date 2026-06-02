@@ -1,0 +1,149 @@
+# Minimal, self-contained Prometheus deployed by `kubectl tidy init --with-prometheus` (and
+# implicitly by `init --with-opencost` when no external --prometheus-url is given). It scrapes
+# the kubelet/cAdvisor (container CPU & memory) so both OpenCost (Tier-2 cost) and kubetidy's
+# Tier-1 PromQL have data.
+#
+# The Service is named "prometheus-server" in namespace "monitoring" — which is OpenCost's
+# default endpoint AND one of kubetidy's auto-detected Prometheus locations, so scan and cost
+# both find it with zero configuration.
+#
+# This is a deliberately minimal setup: a single replica with ephemeral (in-pod) storage and a
+# 15-day retention window. Data is lost if the pod restarts; for durable, production-grade
+# metrics run your own Prometheus and pass --prometheus-url instead.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    app.kubernetes.io/managed-by: kubetidy
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/managed-by: kubetidy
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubetidy-prometheus
+  labels:
+    app.kubernetes.io/managed-by: kubetidy
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "nodes/metrics", "nodes/proxy", "services", "endpoints", "pods"]
+    verbs: ["get", "list", "watch"]
+  - nonResourceURLs: ["/metrics", "/metrics/cadvisor"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubetidy-prometheus
+  labels:
+    app.kubernetes.io/managed-by: kubetidy
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubetidy-prometheus
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: monitoring
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/managed-by: kubetidy
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 30s
+    scrape_configs:
+      # Scrape cAdvisor (container_cpu_usage_seconds_total, container_memory_working_set_bytes)
+      # from each node's kubelet — the metrics OpenCost and kubetidy Tier-1 need.
+      - job_name: kubelet-cadvisor
+        scheme: https
+        tls_config:
+          insecure_skip_verify: true
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        kubernetes_sd_configs:
+          - role: node
+        relabel_configs:
+          - action: labelmap
+            regex: __meta_kubernetes_node_label_(.+)
+          - target_label: __address__
+            replacement: kubernetes.default.svc:443
+          - source_labels: [__meta_kubernetes_node_name]
+            regex: (.+)
+            target_label: __metrics_path__
+            replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus-server
+  namespace: monitoring
+  labels:
+    app: prometheus
+    app.kubernetes.io/managed-by: kubetidy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      serviceAccountName: prometheus
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.54.1
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.retention.time=15d
+          ports:
+            - containerPort: 9090
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 9090
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus-server
+  namespace: monitoring
+  labels:
+    app: prometheus
+    app.kubernetes.io/managed-by: kubetidy
+spec:
+  selector:
+    app: prometheus
+  ports:
+    - name: http
+      port: 80
+      targetPort: 9090

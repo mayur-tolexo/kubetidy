@@ -13,7 +13,7 @@ func TestUninstallCommandFlags(t *testing.T) {
 	if cmd.Use != "uninstall" {
 		t.Errorf("Use = %q, want uninstall", cmd.Use)
 	}
-	for _, name := range []string{"context", "keep-crds", "with-opencost", "yes"} {
+	for _, name := range []string{"context", "keep-crds", "with-opencost", "with-prometheus", "yes"} {
 		if cmd.Flags().Lookup(name) == nil {
 			t.Errorf("uninstall command missing --%s flag", name)
 		}
