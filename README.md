@@ -225,8 +225,8 @@ kubetidy ships as a single binary with two faces — use whichever you prefer:
 - `kubetidy <command>` (standalone)
 
 Commands: **`scan`** (report), **`diff`** (reversible `kubectl patch` per recommendation),
-**`sweep`** (find removable junk), **`pr`** (a GitOps change set — patch files + a Markdown PR
-body), **`init`** (install the CRD + operator), and `version`.
+**`sweep`** (find removable junk), **`cost`** (CI cost-guardrail), **`pr`** (a GitOps change set
+— patch files + a Markdown PR body), **`init`** (install the CRD + operator), and `version`.
 
 ### `scan` — score, dollars, and recommendations
 
@@ -276,6 +276,32 @@ kubectl tidy sweep -o json              # machine-readable
   …
   Read-only: review before deleting. kubetidy never deletes anything.
 ```
+
+### `cost` — the CI cost-guardrail
+
+`cost` prices the CPU/memory requests in Kubernetes manifests — **no cluster needed** — and, given
+a before/after, reports the monthly `$` a change adds or saves. Drop it in CI to flag (or block)
+PRs that quietly grow spend.
+
+```sh
+kubectl tidy cost ./manifests                          # total $/mo of a manifest set
+kubectl tidy cost --base /tmp/base --head ./manifests  # diff: "this change adds $88/mo"
+kubectl tidy cost --base B --head H --fail-over 200    # exit non-zero if it adds > $200/mo
+kubectl tidy cost --base B --head H -o json            # machine-readable (for a PR comment)
+```
+
+```
+kubetidy cost · base → head
+
+  this change adds $88/mo  ($27/mo → $116/mo)
+
+  WORKLOAD                                       BEFORE      AFTER      DELTA
+  Deployment/shop/checkout-api                      $27       $109       +$82  (changed)
+  StatefulSet/shop/cache                              —         $7        +$7  (added)
+```
+
+A ready-to-copy GitHub Actions workflow (comment the delta + enforce a budget) is in
+[`docs/examples/cost-guardrail.yml`](docs/examples/cost-guardrail.yml).
 
 ### `pr` — a reviewable GitOps change set
 

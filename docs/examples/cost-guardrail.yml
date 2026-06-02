@@ -1,0 +1,52 @@
+# Example GitHub Actions workflow: comment a PR's monthly cost delta and (optionally) fail when
+# it exceeds a budget. Copy this into your repo's .github/workflows/ and point --base/--head at
+# wherever your Kubernetes manifests live (here: a top-level ./manifests directory).
+#
+# It uses `kubetidy cost`, which prices CPU/memory requests from the manifests alone — no cluster
+# access or secrets needed.
+name: cost-guardrail
+
+on:
+  pull_request:
+    paths: ["manifests/**"] # adjust to your manifest path
+
+permissions:
+  contents: read
+  pull-requests: write # to comment on the PR
+
+jobs:
+  cost:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need the base ref to diff against
+
+      - name: Install kubetidy
+        run: curl -fsSL https://raw.githubusercontent.com/mayur-tolexo/kubetidy/main/install.sh | sh
+
+      - name: Check out the base version of the manifests
+        run: git worktree add /tmp/base "origin/${{ github.base_ref }}"
+
+      - name: Compute the cost delta
+        id: cost
+        run: |
+          # Human-readable table → the PR comment; JSON → the machine-readable net delta.
+          kubetidy cost --base /tmp/base/manifests --head ./manifests | tee cost.txt
+          echo "net=$(kubetidy cost --base /tmp/base/manifests --head ./manifests -o json | \
+            python3 -c 'import sys,json;print(round(json.load(sys.stdin)["NetDelta"]))')" >> "$GITHUB_OUTPUT"
+
+      - name: Comment on the PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = "### 💸 kubetidy cost guardrail\n\n```\n" +
+              require('fs').readFileSync('cost.txt','utf8') + "\n```";
+            github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: context.issue.number, body,
+            });
+
+      # Optional hard gate: fail the PR if it adds more than $200/mo.
+      - name: Enforce budget
+        run: kubetidy cost --base /tmp/base/manifests --head ./manifests --fail-over 200
