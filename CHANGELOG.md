@@ -7,7 +7,11 @@ fixes/UX).
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+- **`kubetidy cost`** — the CI cost-guardrail. Prices CPU/memory requests in manifests (no
+  cluster) and, with `--base`/`--head`, reports the monthly $ a change adds or saves
+  ("this change adds $88/mo"); `--fail-over <budget>` fails CI on a net increase. Example
+  GitHub Actions workflow in `docs/examples/cost-guardrail.yml`.
 
 ## [0.1.2] — 2026-06-02
 

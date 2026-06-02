@@ -34,7 +34,8 @@ This roadmap is intentionally public and open for discussion — please weigh in
 - [x] `kubetidy pr` — GitOps change set: per-recommendation patch files + a Markdown PR body
       that leads with the `$/mo` delta (apply via Argo CD / Flux / `kubectl`)
 - [x] One-command Prometheus deploy (`make prometheus`) to unlock Tier 1 anywhere
-- [ ] GitHub Action / CI cost-guardrail ("this PR adds $400/mo")
+- [x] **CI cost-guardrail** — `kubetidy cost --base --head` prices manifest changes (no cluster)
+      and reports/blocks the $/mo a PR adds; example GitHub Action in docs/examples/.
 - [ ] Slack weekly digest (retention: puts kubetidy in a loop teams already run)
 - [ ] Opt-in anonymized score submission → "State of Cluster Waste" data report
 
