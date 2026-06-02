@@ -98,22 +98,14 @@ func Table(w io.Writer, result model.ScanResult, opts Options) error {
 	return err
 }
 
-// writeBanner emits the top context line, e.g.
-// "kubetidy · prod-us-east  ·  data: 1 (Prometheus)".
+// writeBanner emits a short top line: "kubetidy · <context>". The data source and provenance
+// move to an aligned "Source" line in the hero, so this stays clean even with a long context.
 func writeBanner(b *strings.Builder, result model.ScanResult, opts Options) {
 	ctx := result.Context
 	if ctx == "" {
 		ctx = "(no context)"
 	}
-	banner := fmt.Sprintf("kubetidy · %s  ·  data: %s", ctx, result.Tier.String())
-	// Window + typical sample count are uniform across a scan, so state them ONCE here rather
-	// than repeating on every row. Exact per-workload samples live in --explain.
-	if w := observedWindow(result); w > 0 {
-		banner += fmt.Sprintf("  ·  %s history", formatWindow(w))
-		if s := typicalSamples(result); s > 0 {
-			banner += fmt.Sprintf(", ~%s samples/workload", formatCount(s))
-		}
-	}
+	banner := "kubetidy · " + ctx
 	if opts.Color {
 		fmt.Fprintf(b, "%s%s%s\n", ansiBold+ansiCyan, banner, ansiReset)
 	} else {
@@ -121,8 +113,8 @@ func writeBanner(b *strings.Builder, result model.ScanResult, opts Options) {
 	}
 }
 
-// writeHero emits the hero summary: efficiency score (with a bar when colored), the dollar
-// waste, and a one-line takeaway counting the rightsizing opportunities.
+// writeHero emits the hero block: efficiency score (with a bar when colored), the dollar waste
+// + workload count, and an aligned Source line naming the data tier, window and sample count.
 func writeHero(b *strings.Builder, result model.ScanResult, opts Options) {
 	if opts.Color {
 		fmt.Fprintf(b, "  Efficiency  %d/100  %s\n", result.EfficiencyScore, scoreBar(result.EfficiencyScore))
@@ -132,24 +124,53 @@ func writeHero(b *strings.Builder, result model.ScanResult, opts Options) {
 
 	waste := formatDollars(result.TotalMonthlyWaste)
 	if opts.Color {
-		fmt.Fprintf(b, "  Waste       %s%s/mo%s  potential savings\n", ansiBold, waste, ansiReset)
+		fmt.Fprintf(b, "  Waste       %s%s/mo%s  potential savings · %s\n", ansiBold, waste, ansiReset, takeaway(result))
 	} else {
-		fmt.Fprintf(b, "  Waste       %s/mo  potential savings\n", waste)
+		fmt.Fprintf(b, "  Waste       %s/mo  potential savings · %s\n", waste, takeaway(result))
 	}
 
-	b.WriteString("  " + takeaway(result) + "\n")
+	fmt.Fprintf(b, "  Source      %s\n", sourceLine(result))
 }
 
-// takeaway is the one-line human summary under the hero numbers.
+// takeaway is the short workload-count phrase shown beside the waste figure.
 func takeaway(result model.ScanResult) string {
-	n := len(result.Recommendations)
-	switch n {
+	switch n := len(result.Recommendations); n {
 	case 0:
-		return "no workloads need rightsizing"
+		return "nothing to rightsize"
 	case 1:
-		return "1 workload can be rightsized"
+		return "1 workload to rightsize"
 	default:
-		return fmt.Sprintf("%d workloads can be rightsized", n)
+		return fmt.Sprintf("%d workloads to rightsize", n)
+	}
+}
+
+// sourceLine describes where the numbers came from: the data tier (friendly name), and — for
+// time-series tiers — the observation window and typical sample count.
+func sourceLine(result model.ScanResult) string {
+	s := tierSource(result.Tier)
+	if w := observedWindow(result); w > 0 {
+		s += fmt.Sprintf(" · %s history", formatWindow(w))
+		if n := typicalSamples(result); n > 0 {
+			s += fmt.Sprintf(", ~%s samples/workload", formatCount(n))
+		}
+	}
+	return s
+}
+
+// tierSource is the human-friendly data-source name for a tier (without the bare tier number
+// that EvidenceTier.String carries, which reads oddly in prose).
+func tierSource(t model.EvidenceTier) string {
+	switch t {
+	case model.TierOperator:
+		return "kubetidy operator (Tier 0, no Prometheus)"
+	case model.TierHistorical:
+		return "Prometheus (Tier 1)"
+	case model.TierAllocated:
+		return "OpenCost (Tier 2)"
+	case model.TierSnapshot:
+		return "metrics-server snapshot (limited — single reading)"
+	default:
+		return "spec only (no usage data)"
 	}
 }
 

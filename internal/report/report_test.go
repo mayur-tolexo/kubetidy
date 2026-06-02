@@ -91,7 +91,7 @@ func TestTableBanner(t *testing.T) {
 	}
 	out := buf.String()
 
-	wantBanner := "kubetidy · prod-us-east  ·  data: 1 (Prometheus)"
+	wantBanner := "kubetidy · prod-us-east"
 	if !strings.Contains(out, wantBanner) {
 		t.Errorf("missing banner line %q\n--- got ---\n%s", wantBanner, out)
 	}
@@ -118,8 +118,12 @@ func TestTableHeroSummary(t *testing.T) {
 	if !strings.Contains(out, "Waste       $7,420/mo  potential savings") {
 		t.Errorf("missing hero waste line\n--- got ---\n%s", out)
 	}
-	if !strings.Contains(out, "2 workloads can be rightsized") {
+	if !strings.Contains(out, "2 workloads to rightsize") {
 		t.Errorf("missing one-line takeaway\n--- got ---\n%s", out)
+	}
+	// Source line names the tier in friendly prose (not the bare "1 (Prometheus)").
+	if !strings.Contains(out, "Source") || !strings.Contains(out, "Prometheus (Tier 1)") {
+		t.Errorf("missing/non-friendly Source line\n--- got ---\n%s", out)
 	}
 }
 
@@ -130,7 +134,7 @@ func TestTakeawaySingular(t *testing.T) {
 	if err := Table(&buf, r, Options{Color: false}); err != nil {
 		t.Fatalf("Table: %v", err)
 	}
-	if !strings.Contains(buf.String(), "1 workload can be rightsized") {
+	if !strings.Contains(buf.String(), "1 workload to rightsize") {
 		t.Errorf("singular takeaway wrong\n--- got ---\n%s", buf.String())
 	}
 }

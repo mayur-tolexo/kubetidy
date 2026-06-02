@@ -114,7 +114,7 @@ func runEngineWithClients(ctx context.Context, f *scanFlags, clients *kube.Clien
 	}
 	if sp != nil {
 		engine.Progress = func(done, total int) {
-			sp.update(fmt.Sprintf("analyzing workloads… %d/%d", done, total))
+			sp.update(scanProgress(done, total))
 		}
 	}
 	result, err := engine.Run(ctx)
