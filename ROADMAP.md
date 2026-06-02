@@ -58,7 +58,8 @@ This roadmap is intentionally public and open for discussion — please weigh in
 - [ ] Multi-cluster aggregation (continuous, in-cluster)
 - [x] **Cleanup detectors** — `kubetidy sweep` finds orphaned Services, unused PVCs (with
       est. $/mo), idle namespaces, and zombie (scaled-to-zero) workloads. Read-only.
-- [ ] Interactive `scan -i` TUI to browse/filter recommendations and drill into `--explain`
+- [x] **Interactive `scan -i` TUI** — browse/filter recommendations and drill into the full
+      `--explain` detail, all in the terminal.
 
 ## 💼 Commercial (open-core)
 
