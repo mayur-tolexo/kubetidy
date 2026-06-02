@@ -17,6 +17,7 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kubetidy/kubetidy/internal/model"
 )
@@ -199,27 +200,29 @@ func writeCard(b *strings.Builder, rec model.Recommendation, opts Options) {
 	cpuChange := fmt.Sprintf("%dm → %dm", rec.Current.Requests.CPUMillicores, rec.Proposed.Requests.CPUMillicores)
 	memChange := fmt.Sprintf("%s → %s", formatMem(rec.Current.Requests.MemoryBytes), formatMem(rec.Proposed.Requests.MemoryBytes))
 
-	var tb strings.Builder
-	tw := tabwriter.NewWriter(&tb, 0, 0, 2, ' ', 0)
+	var header []string
+	var rows [][]string
 	if st.Tier == model.TierSnapshot {
-		_, _ = fmt.Fprint(tw, "  \tnow\trequest → proposed\n")
-		_, _ = fmt.Fprintf(tw, "  cpu\t%s\t%s\n", distCPU(st.CPUMillicores.P95), cpuChange)
-		_, _ = fmt.Fprintf(tw, "  mem\t%s\t%s\n", distMem(st.MemoryBytes.Max), memChange)
+		header = []string{"", "now", "request → proposed"}
+		rows = [][]string{
+			{"cpu", distCPU(st.CPUMillicores.P95), cpuChange},
+			{"mem", distMem(st.MemoryBytes.Max), memChange},
+		}
 	} else {
-		_, _ = fmt.Fprint(tw, "  \tavg\tp95\tp99\tpeak\trequest → proposed\n")
-		c := st.CPUMillicores
-		_, _ = fmt.Fprintf(tw, "  cpu\t%s\t%s\t%s\t%s\t%s\n", distCPU(c.Avg), distCPU(c.P95), distCPU(c.P99), distCPU(c.Max), cpuChange)
-		m := st.MemoryBytes
-		_, _ = fmt.Fprintf(tw, "  mem\t%s\t%s\t%s\t%s\t%s\n", distMem(m.Avg), distMem(m.P95), distMem(m.P99), distMem(m.Max), memChange)
+		header = []string{"", "avg", "p95", "p99", "peak", "request → proposed"}
+		c, m := st.CPUMillicores, st.MemoryBytes
+		rows = [][]string{
+			{"cpu", distCPU(c.Avg), distCPU(c.P95), distCPU(c.P99), distCPU(c.Max), cpuChange},
+			{"mem", distMem(m.Avg), distMem(m.P95), distMem(m.P99), distMem(m.Max), memChange},
+		}
 	}
-	_ = tw.Flush()
+	table := renderBoxTable("  ", header, rows)
 	if opts.Color {
-		// Dim the distribution block so the heading + change stand out.
-		for _, ln := range strings.Split(strings.TrimRight(tb.String(), "\n"), "\n") {
+		for _, ln := range strings.Split(strings.TrimRight(table, "\n"), "\n") {
 			fmt.Fprintf(b, "%s%s%s\n", ansiDim, ln, ansiReset)
 		}
 	} else {
-		b.WriteString(tb.String())
+		b.WriteString(table)
 	}
 
 	if basis := basisLine(rec); basis != "" {
@@ -230,6 +233,62 @@ func writeCard(b *strings.Builder, rec model.Recommendation, opts Options) {
 		}
 	}
 }
+
+// renderBoxTable draws a box-drawing (grid) table from a header row and data rows, each line
+// prefixed with indent. Column widths fit the widest cell (measured in runes so the · and →
+// glyphs don't skew alignment). Cells are left-aligned with one space of padding each side.
+func renderBoxTable(indent string, header []string, rows [][]string) string {
+	cols := len(header)
+	width := make([]int, cols)
+	for c, h := range header {
+		width[c] = runeLen(h)
+	}
+	for _, row := range rows {
+		for c := 0; c < cols && c < len(row); c++ {
+			if w := runeLen(row[c]); w > width[c] {
+				width[c] = w
+			}
+		}
+	}
+
+	rule := func(left, mid, right string) string {
+		var sb strings.Builder
+		sb.WriteString(indent + left)
+		for c := 0; c < cols; c++ {
+			sb.WriteString(strings.Repeat("─", width[c]+2))
+			if c < cols-1 {
+				sb.WriteString(mid)
+			}
+		}
+		sb.WriteString(right + "\n")
+		return sb.String()
+	}
+	line := func(cells []string) string {
+		var sb strings.Builder
+		sb.WriteString(indent + "│")
+		for c := 0; c < cols; c++ {
+			cell := ""
+			if c < len(cells) {
+				cell = cells[c]
+			}
+			sb.WriteString(" " + cell + strings.Repeat(" ", width[c]-runeLen(cell)) + " │")
+		}
+		sb.WriteString("\n")
+		return sb.String()
+	}
+
+	var b strings.Builder
+	b.WriteString(rule("┌", "┬", "┐"))
+	b.WriteString(line(header))
+	b.WriteString(rule("├", "┼", "┤"))
+	for _, row := range rows {
+		b.WriteString(line(row))
+	}
+	b.WriteString(rule("└", "┴", "┘"))
+	return b.String()
+}
+
+func runeLen(s string) int { return utf8.RuneCountInString(s) }
 
 // basisLine states the data a recommendation rests on and how the proposal was sized. It calls
 // out when memory was kept conservative because history is too young to trust the observed peak
