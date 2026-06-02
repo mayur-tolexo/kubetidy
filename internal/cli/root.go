@@ -25,6 +25,7 @@ func NewRootCommand(invokedAs string) *cobra.Command {
 	}
 	root.AddCommand(newScanCommand())
 	root.AddCommand(newDiffCommand())
+	root.AddCommand(newSweepCommand())
 	root.AddCommand(newPRCommand())
 	root.AddCommand(newInitCommand())
 	root.AddCommand(newUninstallCommand())

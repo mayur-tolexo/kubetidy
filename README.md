@@ -225,8 +225,8 @@ kubetidy ships as a single binary with two faces — use whichever you prefer:
 - `kubetidy <command>` (standalone)
 
 Commands: **`scan`** (report), **`diff`** (reversible `kubectl patch` per recommendation),
-**`pr`** (a GitOps change set — patch files + a Markdown PR body), **`init`** (install the
-CRD + operator), and `version`.
+**`sweep`** (find removable junk), **`pr`** (a GitOps change set — patch files + a Markdown PR
+body), **`init`** (install the CRD + operator), and `version`.
 
 ### `scan` — score, dollars, and recommendations
 
@@ -247,6 +247,30 @@ it, with the monthly saving. It is **read-only** — kubetidy never runs the pat
 ```sh
 kubectl tidy diff                       # patches for every recommendation
 kubectl tidy diff --explain checkout    # just the patch for one workload
+```
+
+### `sweep` — find removable junk (the literal tidy)
+
+`sweep` scans the cluster (read-only) for cleanup opportunities beyond rightsizing: Services
+whose selector matches no pods, PersistentVolumeClaims nothing mounts (with an estimated
+`$/mo`), namespaces with no running workloads, and Deployments/StatefulSets scaled to zero.
+
+```sh
+kubectl tidy sweep                      # all categories, cluster-wide
+kubectl tidy sweep -n payments          # scope to one namespace
+kubectl tidy sweep --storage-cost 0.08  # $/GiB-month for unused-PVC estimates
+kubectl tidy sweep -o json              # machine-readable
+```
+
+```
+  Found 9 cleanup opportunities · ~$24/mo reclaimable
+
+  unused pvc (3)
+    • logs/archive-2023    not mounted by any pod · 180Gi · ~$18/mo
+  zombie workload (2)
+    • ops/old-redis (StatefulSet)   scaled to 0 replicas
+  …
+  Read-only: review before deleting. kubetidy never deletes anything.
 ```
 
 ### `pr` — a reviewable GitOps change set

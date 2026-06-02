@@ -56,7 +56,8 @@ This roadmap is intentionally public and open for discussion — please weigh in
       on data maturity, so warm-up history isn't passed off as high-confidence.
 - [ ] Accountability: per-team showback + budgets
 - [ ] Multi-cluster aggregation (continuous, in-cluster)
-- [ ] Cleanup detectors (orphaned services/PVCs, idle namespaces, zombie workloads)
+- [x] **Cleanup detectors** — `kubetidy sweep` finds orphaned Services, unused PVCs (with
+      est. $/mo), idle namespaces, and zombie (scaled-to-zero) workloads. Read-only.
 - [ ] Interactive `scan -i` TUI to browse/filter recommendations and drill into `--explain`
 
 ## 💼 Commercial (open-core)

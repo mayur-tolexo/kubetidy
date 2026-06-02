@@ -11,6 +11,9 @@ Scan output rebuilt around making every recommendation understandable, plus a re
 safety fix. Driven by real-cluster feedback.
 
 ### Added
+- **`kubetidy sweep`** — find removable junk (the literal tidy): orphaned Services (selector
+  matches no pods), unused PVCs (with estimated `$/mo` storage cost), idle namespaces, and
+  zombie (scaled-to-zero) Deployments/StatefulSets. Read-only; `table`/`json` output.
 - **Card per recommendation.** Each finding is its own block: a bordered table of the observed
   **avg / p95 / p99 / peak** for CPU and memory beside the `request → proposed` change, with the
   workload name on its own line (no more truncated/again-wrapped wide table).
