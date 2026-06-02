@@ -15,12 +15,20 @@ import (
 )
 
 type initFlags struct {
-	kubeContext   string
-	crdOnly       bool
-	printOnly     bool
-	image         string
-	withOpenCost  bool
-	prometheusURL string
+	kubeContext    string
+	crdOnly        bool
+	printOnly      bool
+	image          string
+	withOpenCost   bool
+	withPrometheus bool
+	prometheusURL  string
+}
+
+// includePrometheus reports whether init should deploy the bundled Prometheus: when asked
+// explicitly, or implicitly when OpenCost is requested without an external Prometheus to use
+// (OpenCost can't run without one).
+func (f *initFlags) includePrometheus() bool {
+	return f.withPrometheus || (f.withOpenCost && f.prometheusURL == "")
 }
 
 // discoveryFor is a seam so tests can substitute the discovery client. In production it builds
@@ -62,8 +70,9 @@ func newInitCommand() *cobra.Command {
 	flags.BoolVar(&f.crdOnly, "crd-only", false, "install only the UsageProfile CRD, not the operator")
 	flags.BoolVar(&f.printOnly, "print", false, "print the manifests that would be applied, and exit")
 	flags.StringVar(&f.image, "image", "", "operator container image to deploy (required on a real cluster; the embedded default is a local kind-only tag)")
-	flags.BoolVar(&f.withOpenCost, "with-opencost", false, "also deploy OpenCost (needs Prometheus) so scans get precise Tier-2 cost out of the box")
-	flags.StringVar(&f.prometheusURL, "prometheus-url", "", "Prometheus endpoint OpenCost reads from (with --with-opencost; default http://prometheus-server.monitoring.svc:80)")
+	flags.BoolVar(&f.withOpenCost, "with-opencost", false, "also deploy OpenCost for precise Tier-2 cost (auto-deploys a bundled Prometheus unless --prometheus-url is given)")
+	flags.BoolVar(&f.withPrometheus, "with-prometheus", false, "also deploy a minimal Prometheus (monitoring namespace) so Tier-1 scans work with no external Prometheus")
+	flags.StringVar(&f.prometheusURL, "prometheus-url", "", "use this existing Prometheus endpoint for OpenCost instead of the bundled one (default http://prometheus-server.monitoring.svc:80)")
 	return cmd
 }
 
@@ -79,6 +88,10 @@ func runInit(ctx context.Context, f *initFlags) error {
 		if !f.crdOnly {
 			b.WriteString("---\n")
 			b.Write(installer.OperatorManifest())
+		}
+		if f.includePrometheus() {
+			b.WriteString("---\n")
+			b.Write(installer.PrometheusManifest())
 		}
 		if f.withOpenCost {
 			b.WriteString("---\n")
@@ -98,11 +111,12 @@ func runInit(ctx context.Context, f *initFlags) error {
 	}
 
 	opts := installer.Options{
-		IncludeOperator: !f.crdOnly,
-		IncludeOpenCost: f.withOpenCost,
-		PrometheusURL:   f.prometheusURL,
-		Image:           f.image,
-		Log:             func(msg string) { _, _ = fmt.Fprintln(os.Stdout, "•", msg) },
+		IncludeOperator:   !f.crdOnly,
+		IncludeOpenCost:   f.withOpenCost,
+		IncludePrometheus: f.includePrometheus(),
+		PrometheusURL:     f.prometheusURL,
+		Image:             f.image,
+		Log:               func(msg string) { _, _ = fmt.Fprintln(os.Stdout, "•", msg) },
 	}
 	if err := installer.Install(ctx, dyn, disco, opts); err != nil {
 		return err
@@ -110,9 +124,13 @@ func runInit(ctx context.Context, f *initFlags) error {
 
 	msg := "\n✓ kubetidy installed. The operator needs a few minutes to accumulate history;\n" +
 		"  after that, `kubectl tidy scan` runs at Tier 0 with no Prometheus.\n"
+	if f.includePrometheus() {
+		msg += "  A bundled Prometheus is deploying in the monitoring namespace (scrapes\n" +
+			"  kubelet/cAdvisor); it unlocks Tier-1 history and feeds OpenCost.\n"
+	}
 	if f.withOpenCost {
-		msg += "  OpenCost is deploying in the opencost namespace; once it's ready, scans show\n" +
-			"  precise Tier-2 cost from your cluster's actual node pricing.\n"
+		msg += "  OpenCost is deploying in the opencost namespace; once both it and Prometheus\n" +
+			"  are ready, scans show precise Tier-2 cost from your cluster's node pricing.\n"
 	}
 	_, err = io.WriteString(os.Stdout, msg)
 	return err
