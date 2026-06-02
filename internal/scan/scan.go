@@ -6,6 +6,8 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kubetidy/kubetidy/internal/costmodel"
@@ -51,59 +53,34 @@ func (e *Engine) Run(ctx context.Context) (model.ScanResult, error) {
 		result.Tier = e.Usage.Tier()
 	}
 
-	for _, w := range e.Workloads {
-		stats, err := e.Usage.Usage(ctx, w)
-		if err != nil {
-			result.Warnings = append(result.Warnings,
-				fmt.Sprintf("usage unavailable for %s: %v", w.Ref(), err))
-			continue
-		}
-
-		// Price the workload once. On error, warn and continue with a zero price so the
-		// recommendations (sizing/confidence) are still produced, just without dollars.
-		price, err := e.Price.ResourcePrice(ctx, w)
-		if err != nil {
-			result.Warnings = append(result.Warnings,
-				fmt.Sprintf("pricing unavailable for %s: %v", w.Ref(), err))
-			price = model.ResourcePrice{}
-		}
-
-		for _, c := range w.Containers {
-			st, ok := stats[c.Name]
-			if !ok {
-				// MVP: no usage data for this container — skip it (nothing fatal).
-				continue
+	// Analyze workloads CONCURRENTLY: each workload makes several (often network-bound)
+	// usage/price queries, so a sequential loop over a large cluster is slow and the terminal
+	// feels blocked. A bounded worker pool keeps it fast without overwhelming the API server,
+	// and Progress fires per completed workload so the CLI shows live movement. Results land in
+	// a per-index slot (no shared-slice races); the deterministic flatten afterward preserves
+	// stable ordering.
+	perWorkload := make([]workloadResult, len(e.Workloads))
+	sem := make(chan struct{}, scanWorkers)
+	var wg sync.WaitGroup
+	var done int64
+	for i := range e.Workloads {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			perWorkload[i] = e.analyzeWorkload(ctx, e.Workloads[i])
+			if e.Progress != nil {
+				e.Progress(int(atomic.AddInt64(&done, 1)), len(e.Workloads))
 			}
+		}(i)
+	}
+	wg.Wait()
 
-			current := model.ResourceSpec{Requests: c.Requests, Limits: c.Limits}
-			proposed := rightsizer.Recommend(current, st, e.Policy)
-			conf := rightsizer.Confidence(st)
-			savings := costmodel.MonthlySavings(current, proposed, price, w.Replicas)
-
-			// Noise filter: skip recommendations that change essentially nothing or that
-			// save a trivial amount. A "512Mi→513Mi, $0/mo" row is just clutter.
-			if isNoise(current, proposed, savings) {
-				continue
-			}
-
-			rec := model.Recommendation{
-				Workload:       w,
-				ContainerName:  c.Name,
-				Current:        current,
-				Proposed:       proposed,
-				MonthlySavings: savings,
-				Confidence:     conf,
-				Tier:           st.Tier,
-				Usage:          st,
-				Evidence:       buildEvidence(st),
-				Explanation:    buildExplanation(current, proposed, st, price, e.Policy),
-			}
-			result.Recommendations = append(result.Recommendations, rec)
-
-			if savings > 0 {
-				result.TotalMonthlyWaste += savings
-			}
-		}
+	for _, r := range perWorkload {
+		result.Recommendations = append(result.Recommendations, r.recs...)
+		result.Warnings = append(result.Warnings, r.warnings...)
+		result.TotalMonthlyWaste += r.waste
 	}
 
 	// Report the tier that ACTUALLY backed the findings, not the provider's declared tier: with
@@ -126,6 +103,71 @@ func (e *Engine) Run(ctx context.Context) (model.ScanResult, error) {
 
 	result.EfficiencyScore, result.ScoreBreakdown = score.Compute(result)
 	return result, nil
+}
+
+// scanWorkers bounds how many workloads are analyzed concurrently. Enough to hide per-workload
+// query latency, small enough to be gentle on the API server / Prometheus.
+const scanWorkers = 12
+
+// workloadResult is one workload's contribution to the scan, computed off the main goroutine.
+type workloadResult struct {
+	recs     []model.Recommendation
+	warnings []string
+	waste    float64
+}
+
+// analyzeWorkload fetches usage + price for one workload and builds its recommendations. It is
+// pure with respect to shared state (returns its own result), so it is safe to run concurrently.
+func (e *Engine) analyzeWorkload(ctx context.Context, w model.Workload) workloadResult {
+	var out workloadResult
+
+	stats, err := e.Usage.Usage(ctx, w)
+	if err != nil {
+		out.warnings = append(out.warnings, fmt.Sprintf("usage unavailable for %s: %v", w.Ref(), err))
+		return out
+	}
+
+	// Price the workload once. On error, warn and continue with a zero price so the
+	// recommendations (sizing/confidence) are still produced, just without dollars.
+	price, err := e.Price.ResourcePrice(ctx, w)
+	if err != nil {
+		out.warnings = append(out.warnings, fmt.Sprintf("pricing unavailable for %s: %v", w.Ref(), err))
+		price = model.ResourcePrice{}
+	}
+
+	for _, c := range w.Containers {
+		st, ok := stats[c.Name]
+		if !ok {
+			continue // no usage data for this container — skip it
+		}
+
+		current := model.ResourceSpec{Requests: c.Requests, Limits: c.Limits}
+		proposed := rightsizer.Recommend(current, st, e.Policy)
+		savings := costmodel.MonthlySavings(current, proposed, price, w.Replicas)
+
+		// Noise filter: skip recommendations that change essentially nothing or save a trivial
+		// amount. A "512Mi→513Mi, $0/mo" row is just clutter.
+		if isNoise(current, proposed, savings) {
+			continue
+		}
+
+		out.recs = append(out.recs, model.Recommendation{
+			Workload:       w,
+			ContainerName:  c.Name,
+			Current:        current,
+			Proposed:       proposed,
+			MonthlySavings: savings,
+			Confidence:     rightsizer.Confidence(st),
+			Tier:           st.Tier,
+			Usage:          st,
+			Evidence:       buildEvidence(st),
+			Explanation:    buildExplanation(current, proposed, st, price, e.Policy),
+		})
+		if savings > 0 {
+			out.waste += savings
+		}
+	}
+	return out
 }
 
 // dominantTier returns the evidence tier backing the most recommendations (the honest headline

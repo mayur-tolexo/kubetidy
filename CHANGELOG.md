@@ -5,7 +5,33 @@ All notable changes to kubetidy are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (pre-1.0: minor = features, patch =
 fixes/UX).
 
-## [Unreleased] — v0.1.1
+## [Unreleased] — v0.1.2
+
+Scan output rebuilt around making every recommendation understandable, plus a real memory
+safety fix. Driven by real-cluster feedback.
+
+### Added
+- **Card per recommendation.** Each finding is its own block: a bordered table of the observed
+  **avg / p95 / p99 / peak** for CPU and memory beside the `request → proposed` change, with the
+  workload name on its own line (no more truncated/again-wrapped wide table).
+- **Confidence score % inline** next to the band (e.g. `▒ low 34%`), so you can watch it climb
+  as history accumulates.
+- Data **provenance in the banner** (`5h history, ~202 samples/workload`) and a per-card `basis`
+  line, so "what was measured, over how long, from how many samples" is always visible.
+- `--explain` gains a "why this recommendation" block: requested vs the full observed
+  distribution vs proposed, with an over-allocation verdict.
+
+### Changed
+- **OOM-safe memory sizing.** Memory is the dangerous resource and a short window can miss the
+  true peak, so the memory headroom now scales inversely with data maturity — a young history
+  keeps a large cushion (up to peak × ~2), tightening to peak + 15% only once a representative
+  window of samples backs it. CPU stays lean (under-sizing it only throttles). New
+  `Policy.MemoryImmatureSafety`.
+- `model.Percentiles` gains `Avg` + `P99`; providers populate them (Prometheus `avg_over_time` +
+  `quantile_over_time(0.99)`; operator histogram `Mean()` + p99; `UsageProfile` CRD
+  `MetricHistory` gains additive `avg`/`p99` — operator redeploy needed to populate).
+
+## [0.1.1] — 2026-06-01
 
 The operator's Tier‑0 history now actually reaches a scan, and confidence is honest about how
 much data backs each recommendation. Found and fixed against a real cluster.
@@ -48,5 +74,6 @@ Initial public release.
 - Install via **krew**, `curl | sh`, or pre-built archives; tagged GitHub release pipeline
   (GoReleaser) with an auto-rendered krew manifest.
 
-[Unreleased]: https://github.com/mayur-tolexo/kubetidy/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/mayur-tolexo/kubetidy/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/mayur-tolexo/kubetidy/releases/tag/v0.1.1
 [0.1.0]: https://github.com/mayur-tolexo/kubetidy/releases/tag/v0.1.0

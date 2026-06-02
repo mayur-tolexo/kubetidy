@@ -1,13 +1,9 @@
 # VHS tape for the kubetidy README demo GIF.
 # Regenerate with:  make demo-gif   (needs a running kind demo + Prometheus; see the target)
 #
-# Records a real `kubectl tidy scan` + `kubectl tidy diff` at Tier 1 (Prometheus) against the
-# kind demo namespace (the deliberately over-provisioned workloads in
-# hack/kind/demo-workloads.yaml). Tier 1 gives stable, high-confidence numbers and no caveat
-# banner, so the recording is reproducible.
-#
-# Prereqs the target sets up: kind demo running, Prometheus deployed, and a port-forward of
-# prometheus-server to localhost:9090.
+# Records a real `kubectl tidy scan` at Tier 1 (Prometheus) against the kind demo namespace
+# (the over-provisioned load generators in hack/kind/demo-workloads.yaml), showing the card
+# layout: per-workload usage distribution (avg/p95/p99/peak) and the request → proposed change.
 #
 # Docs: https://github.com/charmbracelet/vhs
 
@@ -16,13 +12,13 @@ Output docs/assets/demo.gif
 Require kubectl
 
 Set Shell bash
-Set FontSize 16
-Set Width 1280
-Set Height 820
-Set Padding 24
+Set FontSize 15
+Set Width 1240
+Set Height 1000
+Set Padding 22
 Set Margin 0
 Set Theme "Dracula"
-Set TypingSpeed 35ms
+Set TypingSpeed 32ms
 
 # Setup (hidden): clean prompt, our binary on PATH, isolated kubeconfig for the kind cluster.
 Hide
@@ -32,7 +28,4 @@ Show
 
 Sleep 700ms
 Type "kubectl tidy scan -n kubetidy-demo --prometheus-url http://localhost:9090 --window 1h" Sleep 700ms Enter
-Sleep 4500ms
-
-Type "kubectl tidy diff -n kubetidy-demo --prometheus-url http://localhost:9090 --window 1h" Sleep 700ms Enter
-Sleep 5500ms
+Sleep 7s

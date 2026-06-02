@@ -15,7 +15,6 @@ import (
 	"io"
 	"sort"
 	"strings"
-	"text/tabwriter"
 	"time"
 	"unicode/utf8"
 
@@ -170,8 +169,9 @@ func writeWarnings(b *strings.Builder, warnings []string, opts Options) {
 // usage distribution (avg/p95/p99/peak for cpu AND mem) plus the request→proposed change; a card
 // can, and putting the long workload name on its own line keeps everything aligned and readable.
 func writeRecommendations(b *strings.Builder, recs []model.Recommendation, opts Options) {
+	cols := presentStatCols(recs) // consistent columns across all cards in this scan
 	for i, rec := range recs {
-		writeCard(b, rec, opts)
+		writeCard(b, rec, opts, cols)
 		if i < len(recs)-1 {
 			b.WriteString("\n")
 		}
@@ -187,7 +187,7 @@ func writeRecommendations(b *strings.Builder, recs []model.Recommendation, opts 
 //	  cpu    1m     2m     2m     2m      2000m → 10m
 //	  mem    142Mi  149Mi  149Mi  149Mi  4Gi → 171Mi
 //	  basis  5h history · 201 samples · cpu sized to p95, mem to peak
-func writeCard(b *strings.Builder, rec model.Recommendation, opts Options) {
+func writeCard(b *strings.Builder, rec model.Recommendation, opts Options, cols statCols) {
 	head := fmt.Sprintf("▸ %s · %s/%s   save %s · %s",
 		rec.Workload.Name, rec.Workload.Kind, rec.Workload.Namespace, savingsCell(rec), confidenceCell(rec))
 	if opts.Color {
@@ -196,26 +196,7 @@ func writeCard(b *strings.Builder, rec model.Recommendation, opts Options) {
 		b.WriteString(head + "\n")
 	}
 
-	st := rec.Usage
-	cpuChange := fmt.Sprintf("%dm → %dm", rec.Current.Requests.CPUMillicores, rec.Proposed.Requests.CPUMillicores)
-	memChange := fmt.Sprintf("%s → %s", formatMem(rec.Current.Requests.MemoryBytes), formatMem(rec.Proposed.Requests.MemoryBytes))
-
-	var header []string
-	var rows [][]string
-	if st.Tier == model.TierSnapshot {
-		header = []string{"", "now", "request → proposed"}
-		rows = [][]string{
-			{"cpu", distCPU(st.CPUMillicores.P95), cpuChange},
-			{"mem", distMem(st.MemoryBytes.Max), memChange},
-		}
-	} else {
-		header = []string{"", "avg", "p95", "p99", "peak", "request → proposed"}
-		c, m := st.CPUMillicores, st.MemoryBytes
-		rows = [][]string{
-			{"cpu", distCPU(c.Avg), distCPU(c.P95), distCPU(c.P99), distCPU(c.Max), cpuChange},
-			{"mem", distMem(m.Avg), distMem(m.P95), distMem(m.P99), distMem(m.Max), memChange},
-		}
-	}
+	header, rows := usageTableRows(rec, cols)
 	table := renderBoxTable("  ", header, rows)
 	if opts.Color {
 		for _, ln := range strings.Split(strings.TrimRight(table, "\n"), "\n") {
@@ -232,6 +213,63 @@ func writeCard(b *strings.Builder, rec model.Recommendation, opts Options) {
 			fmt.Fprintf(b, "  basis  %s\n", basis)
 		}
 	}
+}
+
+// usageTableRows builds the header + cpu/mem rows for a recommendation's usage table, shared by
+// the scan card and the --explain view so they render identically. Snapshot tier has no
+// distribution (one reading), so it shows a "now" column instead of avg/p95/p99/peak. The avg
+// and p99 columns are included only when cols says they have data — so an older operator that
+// records only p95/peak shows a clean two-stat table instead of a column of "—".
+func usageTableRows(rec model.Recommendation, cols statCols) (header []string, rows [][]string) {
+	st := rec.Usage
+	cpuChange := fmt.Sprintf("%dm → %dm", rec.Current.Requests.CPUMillicores, rec.Proposed.Requests.CPUMillicores)
+	memChange := fmt.Sprintf("%s → %s", formatMem(rec.Current.Requests.MemoryBytes), formatMem(rec.Proposed.Requests.MemoryBytes))
+	if st.Tier == model.TierSnapshot {
+		return []string{"", "now", "request → proposed"}, [][]string{
+			{"cpu", distCPU(st.CPUMillicores.P95), cpuChange},
+			{"mem", distMem(st.MemoryBytes.Max), memChange},
+		}
+	}
+	c, m := st.CPUMillicores, st.MemoryBytes
+	header = []string{""}
+	cpuRow := []string{"cpu"}
+	memRow := []string{"mem"}
+	if cols.avg {
+		header = append(header, "avg")
+		cpuRow = append(cpuRow, distCPU(c.Avg))
+		memRow = append(memRow, distMem(m.Avg))
+	}
+	header = append(header, "p95")
+	cpuRow = append(cpuRow, distCPU(c.P95))
+	memRow = append(memRow, distMem(m.P95))
+	if cols.p99 {
+		header = append(header, "p99")
+		cpuRow = append(cpuRow, distCPU(c.P99))
+		memRow = append(memRow, distMem(m.P99))
+	}
+	header = append(header, "peak", "request → proposed")
+	cpuRow = append(cpuRow, distCPU(c.Max), cpuChange)
+	memRow = append(memRow, distMem(m.Max), memChange)
+	return header, [][]string{cpuRow, memRow}
+}
+
+// statCols records which optional distribution columns have data worth showing.
+type statCols struct{ avg, p99 bool }
+
+// presentStatCols reports whether any recommendation carries avg / p99 data (for cpu or mem),
+// so columns that would be entirely "—" (e.g. recorded by an older operator) are dropped.
+func presentStatCols(recs []model.Recommendation) statCols {
+	var cols statCols
+	for _, r := range recs {
+		c, m := r.Usage.CPUMillicores, r.Usage.MemoryBytes
+		if c.Avg > 0 || m.Avg > 0 {
+			cols.avg = true
+		}
+		if c.P99 > 0 || m.P99 > 0 {
+			cols.p99 = true
+		}
+	}
+	return cols
 }
 
 // renderBoxTable draws a box-drawing (grid) table from a header row and data rows, each line
@@ -407,31 +445,36 @@ func JSON(w io.Writer, result model.ScanResult) error {
 func Explain(w io.Writer, rec model.Recommendation) error {
 	var b strings.Builder
 
-	fmt.Fprintf(&b, "%s  ·  container: %s\n\n", rec.Workload.Ref(), rec.ContainerName)
+	// Heading.
+	fmt.Fprintf(&b, "%s · container: %s\n\n", rec.Workload.Ref(), rec.ContainerName)
 
-	// The "why" block: requested vs actually-observed vs proposed, then the verdict. This is
-	// what earns trust — it shows we cut to fit real usage, not an arbitrary number.
-	b.WriteString("  why this recommendation\n")
-	fmt.Fprintf(&b, "    requested   cpu %s   ·   mem %s\n",
-		cpuMilli(float64(rec.Current.Requests.CPUMillicores)), formatMem(rec.Current.Requests.MemoryBytes))
-	writeObserved(&b, rec.Usage)
-	fmt.Fprintf(&b, "    proposed    cpu %s   ·   mem %s\n",
-		cpuMilli(float64(rec.Proposed.Requests.CPUMillicores)), formatMem(rec.Proposed.Requests.MemoryBytes))
-	if v := verdict(rec); v != "" {
-		fmt.Fprintf(&b, "    verdict     %s\n", v)
-	}
-
-	b.WriteString("\n")
-	if rec.MonthlySavings < 0 {
-		fmt.Fprintf(&b, "  savings      %s / month  (grow for reliability — costs more, not a saving)\n", formatSignedDollars(rec.MonthlySavings))
+	// Observed usage + the change, as the same bordered table the scan cards use.
+	st := rec.Usage
+	if st.Tier == model.TierSnapshot {
+		b.WriteString("  observed usage · single live snapshot\n")
 	} else {
-		fmt.Fprintf(&b, "  savings      %s / month\n", formatSignedDollars(rec.MonthlySavings))
+		fmt.Fprintf(&b, "  observed usage · %s history · %s samples\n", formatWindow(st.Window), formatCount(st.Samples))
 	}
-	fmt.Fprintf(&b, "  confidence   %s (%d%%) — %s\n", rec.Confidence.Band(), rec.Confidence.Percent(), rec.Confidence.Reason)
-	fmt.Fprintf(&b, "  tier         %s\n", rec.Tier.String())
+	header, rows := usageTableRows(rec, presentStatCols([]model.Recommendation{rec}))
+	b.WriteString(renderBoxTable("  ", header, rows))
+	b.WriteString("\n")
 
+	// Key facts, aligned.
+	kv := func(k, v string) { fmt.Fprintf(&b, "  %-12s %s\n", k, v) }
+	savings := formatSignedDollars(rec.MonthlySavings) + " / month"
+	if rec.MonthlySavings < 0 {
+		savings += "  (grow for reliability — costs more, not a saving)"
+	}
+	kv("savings", savings)
+	kv("confidence", fmt.Sprintf("%s — %s", confidenceCell(rec), rec.Confidence.Reason))
+	if v := verdict(rec); v != "" {
+		kv("verdict", v)
+	}
+	kv("tier", rec.Tier.String())
+
+	// How the proposal was sized.
 	if len(rec.Explanation) > 0 {
-		b.WriteString("\n  derivation\n")
+		b.WriteString("\n  how it's sized\n")
 		for _, line := range rec.Explanation {
 			fmt.Fprintf(&b, "    %s\n", line)
 		}
@@ -439,29 +482,6 @@ func Explain(w io.Writer, rec model.Recommendation) error {
 
 	_, err := io.WriteString(w, b.String())
 	return err
-}
-
-// writeObserved renders the observed-usage block. For a single snapshot there is no
-// distribution, so it shows the one reading; otherwise an aligned avg/p95/p99/peak table.
-func writeObserved(b *strings.Builder, st model.UsageStats) {
-	if st.Tier == model.TierSnapshot {
-		fmt.Fprintf(b, "    observed    single live snapshot · cpu %s · mem %s\n",
-			cpuMilli(st.CPUMillicores.P95), formatMem(int64(st.MemoryBytes.Max+0.5)))
-		return
-	}
-	fmt.Fprintf(b, "    observed    over %s · %s samples\n", formatWindow(st.Window), formatCount(st.Samples))
-
-	var tw strings.Builder
-	t := tabwriter.NewWriter(&tw, 0, 0, 2, ' ', 0)
-	// Leading empty cells indent the block; the header has one extra so avg/p95/... sit over
-	// the values, not over the cpu/mem labels.
-	_, _ = fmt.Fprintf(t, "\t\t\tavg\tp95\tp99\tpeak\n")
-	c := st.CPUMillicores
-	_, _ = fmt.Fprintf(t, "\t\tcpu\t%s\t%s\t%s\t%s\n", distCPU(c.Avg), distCPU(c.P95), distCPU(c.P99), distCPU(c.Max))
-	m := st.MemoryBytes
-	_, _ = fmt.Fprintf(t, "\t\tmem\t%s\t%s\t%s\t%s\n", distMem(m.Avg), distMem(m.P95), distMem(m.P99), distMem(m.Max))
-	_ = t.Flush()
-	b.WriteString(tw.String())
 }
 
 // verdict summarizes how over- (or under-) provisioned the workload is, as a "Nx" factor of

@@ -296,8 +296,8 @@ func TestTableExplainMatch(t *testing.T) {
 	if !strings.Contains(out, "Deployment/default/checkout-api") {
 		t.Errorf("explain should render headline ref\n--- got ---\n%s", out)
 	}
-	if !strings.Contains(out, "derivation") {
-		t.Errorf("explain should render derivation\n--- got ---\n%s", out)
+	if !strings.Contains(out, "how it's sized") {
+		t.Errorf("explain should render the sizing derivation\n--- got ---\n%s", out)
 	}
 	// Should NOT render the summary table.
 	if strings.Contains(out, "WORKLOAD") {
@@ -324,21 +324,18 @@ func TestExplain(t *testing.T) {
 	}
 	out := buf.String()
 	checks := []string{
-		"Deployment/default/checkout-api  ·  container: checkout-api",
-		"why this recommendation",
-		"requested",
-		"cpu 2000m",
-		"observed",
-		"280m", // p95 in the distribution table
-		"proposed",
-		"cpu 320m",
-		"over-allocated on cpu", // verdict
-		"savings",
+		"Deployment/default/checkout-api · container: checkout-api",
+		"observed usage", // section heading
+		"avg", "p95", "p99", "peak",
+		"280m",         // p95 cpu in the distribution table
+		"2000m → 320m", // cpu change column
+		"4Gi → 1.1Gi",  // mem change column
+		"savings",      // key-value block
 		"$210 / month",
-		"high (96%) — tier 1, 14d, low variance",
-		"1 (Prometheus)",
-		"derivation",
-		"cpu request = P95 280m",
+		"high 96%",              // confidence band + %
+		"over-allocated on cpu", // verdict
+		"how it's sized",
+		"cpu request = P95 280m", // from fixture Explanation
 	}
 	for _, c := range checks {
 		if !strings.Contains(out, c) {
