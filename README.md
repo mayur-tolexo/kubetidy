@@ -54,7 +54,8 @@ Tier 1 works on **any cluster** with no cost dependency — the dollar figure is
 blended cloud pricing (override with `--cpu-cost` / `--mem-cost`). Tier 2 kicks in when an
 in-cluster **OpenCost** is present (it needs Prometheus, which is why it sits above Tier 1):
 kubetidy auto-detects it and replaces the derived prices with real allocated cost. Point at one
-explicitly with `--opencost-url`.
+explicitly with `--opencost-url`, or let kubetidy deploy it for you with
+`kubectl tidy init --with-opencost` (see [setup](#one-command-setup-kubectl-tidy-init)).
 
 Within Tier 1, kubetidy auto-detects the best **usage** source — Prometheus or the kubetidy
 operator (historical, high-confidence) over a bare metrics-server snapshot (a conservative
@@ -111,10 +112,28 @@ kubectl tidy init                 # install the CRD + operator (server-side appl
 kubectl tidy init --crd-only      # just the CRD (e.g. GitOps manages the Deployment)
 kubectl tidy init --print         # print the manifests instead of applying them
 kubectl tidy init --image REPO/kubetidy-operator:TAG   # pin a custom operator image
+kubectl tidy init --with-opencost # also deploy OpenCost for precise Tier-2 cost (needs Prometheus)
 ```
 
 `init` applies the CRD first, waits for it to become Established, then deploys the operator.
 It is idempotent — re-run it any time to converge the cluster to the embedded manifests.
+
+### Precise cost out of the box: `--with-opencost`
+
+`--with-opencost` additionally deploys [OpenCost](https://www.opencost.io/) (namespace, RBAC,
+deployment, and service — all embedded) so scans report **precise Tier-2 cost** from your
+cluster's actual node pricing (spot / reserved / committed-use discounts included), instead of
+blended derived pricing. kubetidy auto-detects the deployed OpenCost at `opencost.opencost.svc:9003`.
+
+OpenCost reads usage from Prometheus, so point it at yours:
+
+```sh
+kubectl tidy init --with-opencost \
+  --prometheus-url http://prometheus-server.monitoring.svc:80   # this is the default
+```
+
+`--print --with-opencost` emits the OpenCost manifests too, for GitOps. To remove it later,
+`kubectl tidy uninstall --with-opencost` (off by default, so your own OpenCost is never touched).
 
 To remove everything `init` created, use its inverse:
 
@@ -123,6 +142,7 @@ kubectl tidy uninstall              # delete the operator + all CRDs (and record
 kubectl tidy uninstall --dry-run    # list exactly what would be removed; deletes nothing
 kubectl tidy uninstall --yes        # skip the confirmation prompt
 kubectl tidy uninstall --keep-crds  # remove only the operator; keep the CRDs and history
+kubectl tidy uninstall --with-opencost  # also remove OpenCost installed via init --with-opencost
 kubectl tidy cleanup                # alias for uninstall
 ```
 

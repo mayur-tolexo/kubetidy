@@ -43,6 +43,17 @@ var recommendationCRD []byte
 //go:embed assets/operator.yaml
 var operatorManifest []byte
 
+//go:embed assets/opencost.yaml
+var opencostManifest []byte
+
+// opencostPrometheusPlaceholder is substituted in the embedded OpenCost manifest with the
+// Prometheus endpoint OpenCost should read usage from.
+const opencostPrometheusPlaceholder = "__PROMETHEUS_URL__"
+
+// defaultPrometheusURL is the common in-cluster Prometheus endpoint OpenCost defaults to when
+// the caller doesn't pass one (kube-prometheus-stack / Helm service in the monitoring namespace).
+const defaultPrometheusURL = "http://prometheus-server.monitoring.svc:80"
+
 // crdManifest is the concatenation of all kubetidy CRDs, applied together by init. The
 // UsageProfile CRD is first so we can wait on it specifically before deploying the operator.
 var crdManifest = joinManifests(usageProfileCRD, clusterUsageSummaryCRD, recommendationCRD)
@@ -80,6 +91,11 @@ type Options struct {
 	// Image, when non-empty, overrides the operator container image in the embedded manifest
 	// (defaultOperatorImage). Use it to pin a version tag or point at a private mirror.
 	Image string
+	// IncludeOpenCost additionally deploys OpenCost (namespace, RBAC, deployment, service) so
+	// scans get precise Tier-2 allocated cost. OpenCost reads from Prometheus.
+	IncludeOpenCost bool
+	// PrometheusURL is the endpoint OpenCost reads usage from. Empty uses defaultPrometheusURL.
+	PrometheusURL string
 	// Log receives one-line progress messages. nil discards them.
 	Log func(string)
 }
@@ -120,6 +136,9 @@ func Install(ctx context.Context, dyn dynamic.Interface, disco discovery.Discove
 
 	if !opts.IncludeOperator {
 		opts.log("CRD installed (operator skipped)")
+		if opts.IncludeOpenCost {
+			return installOpenCost(ctx, dyn, mapper, opts)
+		}
 		return nil
 	}
 
@@ -131,8 +150,41 @@ func Install(ctx context.Context, dyn dynamic.Interface, disco discovery.Discove
 	if err := applyManifest(ctx, dyn, mapper, manifest); err != nil {
 		return err
 	}
+
+	if opts.IncludeOpenCost {
+		if err := installOpenCost(ctx, dyn, mapper, opts); err != nil {
+			return err
+		}
+	}
+
 	opts.log("install complete")
 	return nil
+}
+
+// installOpenCost applies the embedded OpenCost manifest (namespace, RBAC, deployment, service),
+// with its Prometheus endpoint substituted. OpenCost then serves an allocation API that kubetidy
+// auto-detects for precise Tier-2 cost.
+func installOpenCost(ctx context.Context, dyn dynamic.Interface, mapper *restmapper.DeferredDiscoveryRESTMapper, opts Options) error {
+	promURL := opts.PrometheusURL
+	if promURL == "" {
+		promURL = defaultPrometheusURL
+	}
+	opts.log("applying OpenCost (Tier 2 cost) — reading usage from " + promURL)
+	manifest := []byte(strings.ReplaceAll(string(opencostManifest), opencostPrometheusPlaceholder, promURL))
+	if err := applyManifest(ctx, dyn, mapper, manifest); err != nil {
+		return err
+	}
+	opts.log("OpenCost installed; kubetidy will auto-detect it for precise cost")
+	return nil
+}
+
+// OpenCostManifest returns the embedded OpenCost YAML with its Prometheus endpoint substituted,
+// for callers that want to print it (`init --print --with-opencost`) instead of applying it.
+func OpenCostManifest(prometheusURL string) []byte {
+	if prometheusURL == "" {
+		prometheusURL = defaultPrometheusURL
+	}
+	return []byte(strings.ReplaceAll(string(opencostManifest), opencostPrometheusPlaceholder, prometheusURL))
 }
 
 // Uninstall removes everything Install created: the operator (Deployment, RBAC, namespace)
@@ -159,7 +211,16 @@ func Uninstall(ctx context.Context, dyn dynamic.Interface, disco discovery.Disco
 		verb = "would delete"
 	}
 
-	// Operator first (Deployment/RBAC/namespace), so the controller stops writing before its
+	// OpenCost first (only when asked — never touch a user's own OpenCost they didn't install
+	// via kubetidy).
+	if opts.IncludeOpenCost {
+		logf(verb + " OpenCost (namespace, RBAC, deployment, service)")
+		if err := deleteManifest(ctx, dyn, mapper, OpenCostManifest(""), opts); err != nil {
+			return err
+		}
+	}
+
+	// Operator next (Deployment/RBAC/namespace), so the controller stops writing before its
 	// CRDs are removed.
 	logf(verb + " operator (deployment, RBAC, namespace)")
 	if err := deleteManifest(ctx, dyn, mapper, operatorManifest, opts); err != nil {
@@ -187,6 +248,9 @@ func Uninstall(ctx context.Context, dyn dynamic.Interface, disco discovery.Disco
 type UninstallOptions struct {
 	// KeepCRDs removes only the operator, leaving the CRDs and their recorded data.
 	KeepCRDs bool
+	// IncludeOpenCost also removes the OpenCost deployment kubetidy installed. Off by default so
+	// a user's own OpenCost is never touched.
+	IncludeOpenCost bool
 	// DryRun reports what would be deleted (per object) without deleting anything.
 	DryRun bool
 	// Log receives one-line progress messages. nil discards them.
