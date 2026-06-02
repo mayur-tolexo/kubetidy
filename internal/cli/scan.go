@@ -7,6 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/kubetidy/kubetidy/internal/kube"
 	"github.com/kubetidy/kubetidy/internal/model"
 	"github.com/kubetidy/kubetidy/internal/pricing"
@@ -26,6 +28,7 @@ type scanFlags struct {
 	window        string
 	cpuCoreMonth  float64
 	memGiBMonth   float64
+	interactive   bool
 }
 
 // clientLoader resolves Kubernetes clients from kubeconfig. It is a seam: production uses
@@ -56,6 +59,7 @@ func newScanCommand() *cobra.Command {
 	flags.StringVar(&f.prometheusURL, "prometheus-url", "", "Prometheus base URL (forces Tier 1)")
 	flags.StringVar(&f.opencostURL, "opencost-url", "", "OpenCost base URL for precise cost (forces Tier 2; auto-detected otherwise)")
 	flags.StringVar(&f.window, "window", "14d", "Prometheus lookback window")
+	flags.BoolVarP(&f.interactive, "interactive", "i", false, "browse recommendations in an interactive TUI")
 	flags.Float64Var(&f.cpuCoreMonth, "cpu-cost", 0, "override $ per CPU core-month (0 = default)")
 	flags.Float64Var(&f.memGiBMonth, "mem-cost", 0, "override $ per GiB-month (0 = default)")
 	return cmd
@@ -67,7 +71,19 @@ func runScan(ctx context.Context, f *scanFlags) error {
 	if err != nil {
 		return err
 	}
+	// Interactive TUI: only when asked, attached to a TTY, in table mode, and with results to
+	// browse — otherwise fall through to the normal render (pipes, JSON, CI stay unchanged).
+	if f.interactive && f.output != "json" && isTTY(os.Stdout) && len(result.Recommendations) > 0 {
+		return runScanTUI(result)
+	}
 	return render(result, f)
+}
+
+// runScanTUI launches the bubbletea browser over the scan result.
+var runScanTUI = func(result model.ScanResult) error {
+	p := tea.NewProgram(newTUIModel(result), tea.WithAltScreen())
+	_, err := p.Run()
+	return err
 }
 
 // runEngine resolves clients (with a live progress spinner) then runs the testable

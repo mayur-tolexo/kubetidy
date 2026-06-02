@@ -237,7 +237,11 @@ kubectl tidy scan --output json         # machine-readable, stable schema
 kubectl tidy scan --explain checkout    # full derivation for one workload
 kubectl tidy scan --prometheus-url URL  # force Tier 1 (Prometheus)
 kubectl tidy scan --top 10              # limit recommendations shown
+kubectl tidy scan -i                     # interactive TUI: browse, filter (/), drill in (enter)
 ```
+
+`-i` opens a full-screen browser of the recommendations — arrow keys to move, `/` to filter,
+`enter` to open the full `--explain` detail for a workload, `esc` to go back, `q` to quit.
 
 ### `diff` — the exact, reversible patch
 

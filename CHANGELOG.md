@@ -11,6 +11,8 @@ Scan output rebuilt around making every recommendation understandable, plus a re
 safety fix. Driven by real-cluster feedback.
 
 ### Added
+- **`kubetidy scan -i`** — an interactive terminal UI to browse and filter recommendations and
+  drill into the full `--explain` detail, without leaving the terminal (Charm bubbletea).
 - **`kubetidy sweep`** — find removable junk (the literal tidy): orphaned Services (selector
   matches no pods), unused PVCs (with estimated `$/mo` storage cost), idle namespaces, and
   zombie (scaled-to-zero) Deployments/StatefulSets. Read-only; `table`/`json` output.
