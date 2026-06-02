@@ -5,10 +5,14 @@ All notable changes to kubetidy are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (pre-1.0: minor = features, patch =
 fixes/UX).
 
-## [Unreleased] — v0.1.2
+## [Unreleased]
+
+_Nothing yet._
+
+## [0.1.2] — 2026-06-02
 
 Scan output rebuilt around making every recommendation understandable, plus a real memory
-safety fix. Driven by real-cluster feedback.
+safety fix, an interactive browser, and a new cleanup command. Driven by real-cluster feedback.
 
 ### Added
 - **`kubetidy scan -i`** — an interactive terminal UI to browse and filter recommendations and
@@ -79,6 +83,7 @@ Initial public release.
 - Install via **krew**, `curl | sh`, or pre-built archives; tagged GitHub release pipeline
   (GoReleaser) with an auto-rendered krew manifest.
 
-[Unreleased]: https://github.com/mayur-tolexo/kubetidy/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/mayur-tolexo/kubetidy/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/mayur-tolexo/kubetidy/releases/tag/v0.1.2
 [0.1.1]: https://github.com/mayur-tolexo/kubetidy/releases/tag/v0.1.1
 [0.1.0]: https://github.com/mayur-tolexo/kubetidy/releases/tag/v0.1.0
