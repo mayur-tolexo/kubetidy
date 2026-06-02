@@ -1,11 +1,13 @@
 # Demo workloads for kubetidy local testing.
 #
-# These are deliberately OVER-PROVISIONED: each asks for far more CPU/memory than it uses
-# (the pause image uses almost nothing), so `kubectl tidy scan` surfaces real rightsizing
-# savings and a low efficiency score.
+# These are deliberately OVER-PROVISIONED: each REQUESTS far more CPU/memory than it uses, so
+# `kubectl tidy scan` surfaces real rightsizing savings. Unlike a bare `pause` container (which
+# uses ~0 and shows up as "—"), these tiny Python load generators hold a fixed chunk of memory
+# and burn a small, steady amount of CPU — so the scan shows a real avg/p95/p99/peak
+# distribution and a meaningful reduction.
 #
-# Requests are sized to fit on a single default kind node (12 CPU / ~8Gi): the whole namespace
-# asks for ~5 cores / ~5Gi, so every pod schedules and the rollout settles.
+# Requests are sized to fit a single default kind node (12 CPU / ~8Gi); actual usage is a small
+# fraction of the request.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -19,23 +21,28 @@ metadata:
 spec:
   replicas: 2
   selector:
-    matchLabels:
-      app: checkout-api
+    matchLabels: { app: checkout-api }
   template:
     metadata:
-      labels:
-        app: checkout-api
+      labels: { app: checkout-api }
     spec:
       containers:
         - name: checkout-api
-          image: registry.k8s.io/pause:3.10
+          image: python:3.12-alpine
+          # Hold ~120Mi and burn a small, steady CPU slice (busy burst + sleep).
+          command: ["python3", "-c"]
+          args:
+            - |
+              import time
+              buf = bytearray(120 * 1024 * 1024)   # hold ~120Mi
+              while True:                            # ~12% of a core
+                  t = time.time()
+                  while time.time() - t < 0.02:
+                      pass
+                  time.sleep(0.15)
           resources:
-            requests:
-              cpu: "1000m"     # asks for a full core...
-              memory: "1Gi"    # ...and 1Gi, but pause uses almost nothing
-            limits:
-              cpu: "1000m"
-              memory: "1Gi"
+            requests: { cpu: "1000m", memory: "1Gi" }   # asks for a full core + 1Gi...
+            limits:   { cpu: "1000m", memory: "1Gi" }   # ...but uses ~0.1 core / ~120Mi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -45,23 +52,27 @@ metadata:
 spec:
   replicas: 1
   selector:
-    matchLabels:
-      app: search-indexer
+    matchLabels: { app: search-indexer }
   template:
     metadata:
-      labels:
-        app: search-indexer
+      labels: { app: search-indexer }
     spec:
       containers:
         - name: search-indexer
-          image: registry.k8s.io/pause:3.10
+          image: python:3.12-alpine
+          command: ["python3", "-c"]
+          args:
+            - |
+              import time
+              buf = bytearray(220 * 1024 * 1024)   # hold ~220Mi
+              while True:                            # ~18% of a core
+                  t = time.time()
+                  while time.time() - t < 0.03:
+                      pass
+                  time.sleep(0.14)
           resources:
-            requests:
-              cpu: "2000m"
-              memory: "2Gi"
-            limits:
-              cpu: "2000m"
-              memory: "2Gi"
+            requests: { cpu: "2000m", memory: "2Gi" }
+            limits:   { cpu: "2000m", memory: "2Gi" }
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -72,20 +83,24 @@ spec:
   serviceName: cache
   replicas: 2
   selector:
-    matchLabels:
-      app: cache
+    matchLabels: { app: cache }
   template:
     metadata:
-      labels:
-        app: cache
+      labels: { app: cache }
     spec:
       containers:
         - name: cache
-          image: registry.k8s.io/pause:3.10
+          image: python:3.12-alpine
+          command: ["python3", "-c"]
+          args:
+            - |
+              import time
+              buf = bytearray(80 * 1024 * 1024)    # hold ~80Mi
+              while True:                            # ~8% of a core
+                  t = time.time()
+                  while time.time() - t < 0.015:
+                      pass
+                  time.sleep(0.18)
           resources:
-            requests:
-              cpu: "500m"
-              memory: "512Mi"
-            limits:
-              cpu: "500m"
-              memory: "512Mi"
+            requests: { cpu: "500m", memory: "512Mi" }
+            limits:   { cpu: "500m", memory: "512Mi" }

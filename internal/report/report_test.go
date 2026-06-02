@@ -37,8 +37,13 @@ func fixture() model.ScanResult {
 				MonthlySavings: 210,
 				Confidence:     model.Confidence{Score: 0.96, Reason: "tier 1, 14d, low variance"},
 				Tier:           model.TierHistorical,
-				Evidence:       "P95 cpu 280m, max mem 0.9Gi over 14d · 1.2M samples",
-				Explanation:    []string{"cpu request = P95 280m + 15% headroom = 322m -> 320m", "mem request = max 0.9Gi + 15% headroom"},
+				Usage: model.UsageStats{
+					CPUMillicores: model.Percentiles{Avg: 200, P50: 250, P95: 280, P99: 300, Max: 350},
+					MemoryBytes:   model.Percentiles{Avg: 700 * mib, P50: 720 * mib, P95: 820 * mib, P99: 870 * mib, Max: 0.9 * gib},
+					Window:        14 * 24 * time.Hour, Samples: 1_200_000, Tier: model.TierHistorical,
+				},
+				Evidence:    "p95 cpu 280m, peak mem 0.9Gi over 14d · 1.2M samples",
+				Explanation: []string{"cpu request = P95 280m + 15% headroom = 322m -> 320m", "mem request = max 0.9Gi + 15% headroom"},
 			},
 		},
 		EfficiencyScore:   41,
@@ -63,7 +68,12 @@ func snapshotFixture() model.ScanResult {
 				MonthlySavings: 12,
 				Confidence:     model.Confidence{Score: 0.35, Reason: "tier 0, 1 sample"},
 				Tier:           model.TierSnapshot,
-				Evidence:       "live cpu 40m, mem 130Mi (single snapshot)",
+				Usage: model.UsageStats{
+					CPUMillicores: model.Percentiles{Avg: 40, P95: 40, P99: 40, Max: 40},
+					MemoryBytes:   model.Percentiles{Avg: 130 * mib, P95: 130 * mib, P99: 130 * mib, Max: 130 * mib},
+					Samples:       1, Tier: model.TierSnapshot,
+				},
+				Evidence: "live cpu 40m, mem 130Mi (single snapshot)",
 			},
 		},
 		EfficiencyScore:   58,
@@ -81,7 +91,7 @@ func TestTableBanner(t *testing.T) {
 	}
 	out := buf.String()
 
-	wantBanner := "kubetidy · prod-us-east  ·  data: 1 (Prometheus)"
+	wantBanner := "kubetidy · prod-us-east"
 	if !strings.Contains(out, wantBanner) {
 		t.Errorf("missing banner line %q\n--- got ---\n%s", wantBanner, out)
 	}
@@ -108,8 +118,12 @@ func TestTableHeroSummary(t *testing.T) {
 	if !strings.Contains(out, "Waste       $7,420/mo  potential savings") {
 		t.Errorf("missing hero waste line\n--- got ---\n%s", out)
 	}
-	if !strings.Contains(out, "2 workloads can be rightsized") {
+	if !strings.Contains(out, "2 workloads to rightsize") {
 		t.Errorf("missing one-line takeaway\n--- got ---\n%s", out)
+	}
+	// Source line names the tier in friendly prose (not the bare "1 (Prometheus)").
+	if !strings.Contains(out, "Source") || !strings.Contains(out, "Prometheus (Tier 1)") {
+		t.Errorf("missing/non-friendly Source line\n--- got ---\n%s", out)
 	}
 }
 
@@ -120,7 +134,7 @@ func TestTakeawaySingular(t *testing.T) {
 	if err := Table(&buf, r, Options{Color: false}); err != nil {
 		t.Fatalf("Table: %v", err)
 	}
-	if !strings.Contains(buf.String(), "1 workload can be rightsized") {
+	if !strings.Contains(buf.String(), "1 workload to rightsize") {
 		t.Errorf("singular takeaway wrong\n--- got ---\n%s", buf.String())
 	}
 }
@@ -149,35 +163,25 @@ func TestTableRecommendationRow(t *testing.T) {
 	}
 	out := buf.String()
 
-	// Header columns are present.
-	for _, col := range []string{"WORKLOAD", "CPU", "MEM", "SAVINGS", "CONF"} {
-		if !strings.Contains(out, col) {
-			t.Errorf("missing column header %q\n--- got ---\n%s", col, out)
+	// Card heading: workload, location, savings, confidence.
+	for _, want := range []string{"▸ checkout-api", "Deployment/default", "save $210/mo", "█ high 96%"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("card heading missing %q\n--- got ---\n%s", want, out)
 		}
 	}
-	// Highest savings (checkout-api, $210) must appear; search-api ($90) truncated.
-	if !strings.Contains(out, "checkout-api") {
-		t.Errorf("top rec missing\n--- got ---\n%s", out)
-	}
+	// TopN=1 keeps the top rec (checkout-api, $210) and drops search-api ($90).
 	if strings.Contains(out, "search-api") {
 		t.Errorf("TopN=1 should truncate lower rec\n--- got ---\n%s", out)
 	}
-	if !strings.Contains(out, "2000m → 320m") {
-		t.Errorf("missing cpu transition\n--- got ---\n%s", out)
+	// The distribution block: header + the p95 cpu value, and the request → proposed change.
+	for _, want := range []string{"avg", "p95", "p99", "peak", "request → proposed", "280m", "2000m → 320m", "4Gi → 1.1Gi"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("card body missing %q\n--- got ---\n%s", want, out)
+		}
 	}
-	// 4Gi -> ~1.1Gi adaptive memory.
-	if !strings.Contains(out, "4Gi → 1.1Gi") {
-		t.Errorf("missing adaptive mem transition\n--- got ---\n%s", out)
-	}
-	if !strings.Contains(out, "$210/mo") {
-		t.Errorf("missing savings\n--- got ---\n%s", out)
-	}
-	if !strings.Contains(out, "█ high 96%") {
-		t.Errorf("missing confidence band + percent\n--- got ---\n%s", out)
-	}
-	// Evidence is indented under the row with the └ marker.
-	if !strings.Contains(out, "    └ P95 cpu 280m") {
-		t.Errorf("missing indented evidence line\n--- got ---\n%s", out)
+	// Basis line states the data backing it.
+	if !strings.Contains(out, "basis") || !strings.Contains(out, "14d history") {
+		t.Errorf("missing basis line\n--- got ---\n%s", out)
 	}
 }
 
@@ -192,7 +196,8 @@ func TestTableAdaptiveMemoryNeverZeroGi(t *testing.T) {
 	if strings.Contains(out, "0.0Gi") {
 		t.Errorf("must never print 0.0Gi\n--- got ---\n%s", out)
 	}
-	if !strings.Contains(out, "512Mi → 170Mi") {
+	// 512Mi (requested) and 170Mi (proposed) render in Mi across the cpu/mem cells.
+	if !strings.Contains(out, "512Mi") || !strings.Contains(out, "170Mi") {
 		t.Errorf("missing sub-Gi adaptive mem rendering\n--- got ---\n%s", out)
 	}
 }
@@ -256,7 +261,7 @@ func TestTableLegendShown(t *testing.T) {
 		t.Fatalf("Table: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "CONF = confidence:") {
+	if !strings.Contains(out, "each card:") {
 		t.Errorf("missing legend\n--- got ---\n%s", out)
 	}
 }
@@ -295,8 +300,8 @@ func TestTableExplainMatch(t *testing.T) {
 	if !strings.Contains(out, "Deployment/default/checkout-api") {
 		t.Errorf("explain should render headline ref\n--- got ---\n%s", out)
 	}
-	if !strings.Contains(out, "derivation:") {
-		t.Errorf("explain should render derivation\n--- got ---\n%s", out)
+	if !strings.Contains(out, "how it's sized") {
+		t.Errorf("explain should render the sizing derivation\n--- got ---\n%s", out)
 	}
 	// Should NOT render the summary table.
 	if strings.Contains(out, "WORKLOAD") {
@@ -323,16 +328,18 @@ func TestExplain(t *testing.T) {
 	}
 	out := buf.String()
 	checks := []string{
-		"Deployment/default/checkout-api  ·  container: checkout-api",
-		"change:",
-		"cpu:  2000m → 320m",
-		"mem:  4Gi → 1.1Gi",
-		"savings:  $210 / month",
-		"confidence:  high (96%) — tier 1, 14d, low variance",
-		"tier:  1 (Prometheus)",
-		"evidence:  P95 cpu 280m",
-		"derivation:",
-		"cpu request = P95 280m",
+		"Deployment/default/checkout-api · container: checkout-api",
+		"observed usage", // section heading
+		"avg", "p95", "p99", "peak",
+		"280m",         // p95 cpu in the distribution table
+		"2000m → 320m", // cpu change column
+		"4Gi → 1.1Gi",  // mem change column
+		"savings",      // key-value block
+		"$210 / month",
+		"high 96%",              // confidence band + %
+		"over-allocated on cpu", // verdict
+		"how it's sized",
+		"cpu request = P95 280m", // from fixture Explanation
 	}
 	for _, c := range checks {
 		if !strings.Contains(out, c) {
@@ -349,7 +356,7 @@ func TestExplainNegativeSavings(t *testing.T) {
 		t.Fatalf("Explain: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "savings:  -$45 / month") {
+	if !strings.Contains(out, "-$45 / month") {
 		t.Errorf("expected signed negative savings\n--- got ---\n%s", out)
 	}
 	if !strings.Contains(out, "grow for reliability") {

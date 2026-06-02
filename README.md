@@ -279,12 +279,20 @@ kubectl tidy pr --include-grow       # also include under-provisioned ("grow") w
 ## Rightsizing policy (defaults)
 
 - **CPU request** = P95 + 15% headroom; **no CPU limit** by default (avoids throttling).
-- **Memory request** = max + 15% headroom (memory OOMs, so we use max, not a percentile);
-  **memory limit** = request (Guaranteed QoS).
+  Under-sizing CPU only throttles, so it stays lean.
+- **Memory request** = peak + headroom, with **OOM safety**: memory is the dangerous resource
+  (under-sizing kills the pod), and a short window may not have seen the true peak. So the
+  memory buffer **scales with data maturity** — a young history keeps a large cushion
+  (e.g. peak × 2), tightening to peak + 15% only once a representative window of samples backs
+  it. **memory limit** = request (Guaranteed QoS).
 - **Snapshot safety**: when only a single metrics-server snapshot is available, an extra
   buffer and request floors keep recommendations conservative.
 
-All defaults are surfaced in `--explain` and overridable. The number is never a black box.
+Every scan shows its work: each recommendation is a card with the observed **avg / p95 / p99 /
+peak** for CPU and memory beside the `request → proposed` change, the **window + sample count**
+the numbers rest on, and a **confidence** grade (`▒ low · ▓ med · █ high` + score%) that grows
+as history accumulates. `--explain <workload>` adds the full derivation. The number is never a
+black box.
 
 ## Status
 

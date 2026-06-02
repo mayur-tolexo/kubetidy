@@ -415,8 +415,10 @@ func (c *Collector) buildProfile(w model.Workload, name string, now time.Time) u
 // encoded snapshot for exact rehydration.
 func metricHistory(h *histogram.Histogram) usageprofile.MetricHistory {
 	return usageprofile.MetricHistory{
+		Avg:       h.Mean(),
 		P50:       h.Percentile(0.50),
 		P95:       h.Percentile(0.95),
+		P99:       h.Percentile(0.99),
 		Max:       h.Max(),
 		Histogram: encodeSnapshot(h.ToSnapshot()),
 	}

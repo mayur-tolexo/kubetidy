@@ -124,7 +124,7 @@ func TestRun_ProducesRecommendationsAndScore(t *testing.T) {
 	if rec.Confidence.Score <= 0 {
 		t.Errorf("Confidence.Score = %.2f, want > 0", rec.Confidence.Score)
 	}
-	if !strings.Contains(rec.Evidence, "P95 cpu") || !strings.Contains(rec.Evidence, "samples") {
+	if !strings.Contains(rec.Evidence, "p95 cpu") || !strings.Contains(rec.Evidence, "samples") {
 		t.Errorf("Evidence not composed as expected: %q", rec.Evidence)
 	}
 	if len(rec.Explanation) == 0 {

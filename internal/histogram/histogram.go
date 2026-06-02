@@ -195,6 +195,20 @@ func (h *Histogram) Percentile(q float64) float64 {
 	return h.bounds[len(h.bounds)-1]
 }
 
+// Mean returns the weighted mean of the current decayed distribution, using each bucket's upper
+// bound as its representative value (the same convention as Percentile, so Mean ≤ P-high reads
+// consistently). Returns 0 when the histogram is empty.
+func (h *Histogram) Mean() float64 {
+	if h.total <= 0 {
+		return 0
+	}
+	var weighted float64
+	for i, w := range h.weights {
+		weighted += h.bounds[i] * w
+	}
+	return weighted / h.total
+}
+
 // Max returns the largest raw value ever observed. Unlike Percentile it is not decayed: for
 // memory in particular the historical peak is the safety-relevant figure (OOM risk), so we
 // keep an exact maximum rather than a decayed estimate.

@@ -62,6 +62,12 @@ func Recommend(current model.ResourceSpec, usage model.UsageStats, policy model.
 	if snapshot {
 		cpuHeadroom += policy.SnapshotHeadroom
 		memHeadroom += policy.SnapshotHeadroom
+	} else {
+		// Memory is OOM-dangerous and a short window can miss the true peak, so add extra memory
+		// headroom in inverse proportion to data maturity: a young history keeps a large cushion
+		// (no aggressive cut that could OOM), shrinking to the base only once a representative
+		// window of samples backs it. CPU is left lean — under-sizing it only throttles.
+		memHeadroom += (1 - dataMaturity(usage)) * policy.MemoryImmatureSafety
 	}
 
 	// --- CPU ---
@@ -158,6 +164,19 @@ const (
 	immatureFloor     = 0.30
 )
 
+// dataMaturity reports how much real history backs a time-series usage stat, 0..1. It is the
+// weakest of window-coverage and sample-coverage, so BOTH enough elapsed time AND enough samples
+// are required to reach 1 — a few minutes of dense scraping is still "immature". Used by both the
+// confidence score and the memory safety buffer.
+func dataMaturity(usage model.UsageStats) float64 {
+	windowMaturity := clamp01(usage.Window.Hours() / matureWindowHours)
+	sampleMaturity := 0.0
+	if usage.Samples > 1 {
+		sampleMaturity = clamp01(math.Log10(float64(usage.Samples)) / math.Log10(matureSamples))
+	}
+	return math.Min(windowMaturity, sampleMaturity)
+}
+
 // Confidence scores a recommendation 0..1 from its usage evidence. Snapshot/static tiers use a
 // fixed (low) base; time-series tiers (operator, Prometheus, OpenCost) earn their high base only
 // as data matures (enough window AND samples), then lose ground to observed variance.
@@ -182,15 +201,8 @@ func Confidence(usage model.UsageStats) model.Confidence {
 		}
 	} else {
 		// Time-series tiers (operator, Prometheus, OpenCost): gate the tier's high base on how
-		// much real history backs it. maturity is the weakest of window- and sample-coverage,
-		// so BOTH enough elapsed time and enough samples are required to earn full confidence.
-		windowMaturity := clamp01(usage.Window.Hours() / matureWindowHours)
-		sampleMaturity := 0.0
-		if usage.Samples > 1 {
-			sampleMaturity = clamp01(math.Log10(float64(usage.Samples)) / math.Log10(matureSamples))
-		}
-		maturity := math.Min(windowMaturity, sampleMaturity)
-		score = immatureFloor + maturity*(base-immatureFloor) - variancePenalty
+		// much real history backs it (see dataMaturity), then dock for variance.
+		score = immatureFloor + dataMaturity(usage)*(base-immatureFloor) - variancePenalty
 	}
 
 	score = clamp(score, 0.05, 0.99)

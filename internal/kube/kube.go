@@ -40,6 +40,12 @@ func Load(contextOverride, namespaceOverride string) (*Clients, error) {
 		return nil, fmt.Errorf("kube: building rest config from kubeconfig: %w", err)
 	}
 
+	// kubetidy scans workloads concurrently and is read-only, so the client-go default rate
+	// limit (QPS 5 / burst 10) throttles it hard and spams "client-side throttling" warnings.
+	// Raise it: these are cheap GETs/LISTs against the API server, well within reason.
+	restConfig.QPS = 50
+	restConfig.Burst = 100
+
 	kubeClient, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
 		return nil, fmt.Errorf("kube: creating kubernetes client: %w", err)

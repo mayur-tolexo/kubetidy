@@ -6,6 +6,8 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kubetidy/kubetidy/internal/costmodel"
@@ -51,58 +53,34 @@ func (e *Engine) Run(ctx context.Context) (model.ScanResult, error) {
 		result.Tier = e.Usage.Tier()
 	}
 
-	for _, w := range e.Workloads {
-		stats, err := e.Usage.Usage(ctx, w)
-		if err != nil {
-			result.Warnings = append(result.Warnings,
-				fmt.Sprintf("usage unavailable for %s: %v", w.Ref(), err))
-			continue
-		}
-
-		// Price the workload once. On error, warn and continue with a zero price so the
-		// recommendations (sizing/confidence) are still produced, just without dollars.
-		price, err := e.Price.ResourcePrice(ctx, w)
-		if err != nil {
-			result.Warnings = append(result.Warnings,
-				fmt.Sprintf("pricing unavailable for %s: %v", w.Ref(), err))
-			price = model.ResourcePrice{}
-		}
-
-		for _, c := range w.Containers {
-			st, ok := stats[c.Name]
-			if !ok {
-				// MVP: no usage data for this container — skip it (nothing fatal).
-				continue
+	// Analyze workloads CONCURRENTLY: each workload makes several (often network-bound)
+	// usage/price queries, so a sequential loop over a large cluster is slow and the terminal
+	// feels blocked. A bounded worker pool keeps it fast without overwhelming the API server,
+	// and Progress fires per completed workload so the CLI shows live movement. Results land in
+	// a per-index slot (no shared-slice races); the deterministic flatten afterward preserves
+	// stable ordering.
+	perWorkload := make([]workloadResult, len(e.Workloads))
+	sem := make(chan struct{}, scanWorkers)
+	var wg sync.WaitGroup
+	var done int64
+	for i := range e.Workloads {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			perWorkload[i] = e.analyzeWorkload(ctx, e.Workloads[i])
+			if e.Progress != nil {
+				e.Progress(int(atomic.AddInt64(&done, 1)), len(e.Workloads))
 			}
+		}(i)
+	}
+	wg.Wait()
 
-			current := model.ResourceSpec{Requests: c.Requests, Limits: c.Limits}
-			proposed := rightsizer.Recommend(current, st, e.Policy)
-			conf := rightsizer.Confidence(st)
-			savings := costmodel.MonthlySavings(current, proposed, price, w.Replicas)
-
-			// Noise filter: skip recommendations that change essentially nothing or that
-			// save a trivial amount. A "512Mi→513Mi, $0/mo" row is just clutter.
-			if isNoise(current, proposed, savings) {
-				continue
-			}
-
-			rec := model.Recommendation{
-				Workload:       w,
-				ContainerName:  c.Name,
-				Current:        current,
-				Proposed:       proposed,
-				MonthlySavings: savings,
-				Confidence:     conf,
-				Tier:           st.Tier,
-				Evidence:       buildEvidence(st),
-				Explanation:    buildExplanation(w, current, proposed, st, price, e.Policy, savings),
-			}
-			result.Recommendations = append(result.Recommendations, rec)
-
-			if savings > 0 {
-				result.TotalMonthlyWaste += savings
-			}
-		}
+	for _, r := range perWorkload {
+		result.Recommendations = append(result.Recommendations, r.recs...)
+		result.Warnings = append(result.Warnings, r.warnings...)
+		result.TotalMonthlyWaste += r.waste
 	}
 
 	// Report the tier that ACTUALLY backed the findings, not the provider's declared tier: with
@@ -125,6 +103,71 @@ func (e *Engine) Run(ctx context.Context) (model.ScanResult, error) {
 
 	result.EfficiencyScore, result.ScoreBreakdown = score.Compute(result)
 	return result, nil
+}
+
+// scanWorkers bounds how many workloads are analyzed concurrently. Enough to hide per-workload
+// query latency, small enough to be gentle on the API server / Prometheus.
+const scanWorkers = 12
+
+// workloadResult is one workload's contribution to the scan, computed off the main goroutine.
+type workloadResult struct {
+	recs     []model.Recommendation
+	warnings []string
+	waste    float64
+}
+
+// analyzeWorkload fetches usage + price for one workload and builds its recommendations. It is
+// pure with respect to shared state (returns its own result), so it is safe to run concurrently.
+func (e *Engine) analyzeWorkload(ctx context.Context, w model.Workload) workloadResult {
+	var out workloadResult
+
+	stats, err := e.Usage.Usage(ctx, w)
+	if err != nil {
+		out.warnings = append(out.warnings, fmt.Sprintf("usage unavailable for %s: %v", w.Ref(), err))
+		return out
+	}
+
+	// Price the workload once. On error, warn and continue with a zero price so the
+	// recommendations (sizing/confidence) are still produced, just without dollars.
+	price, err := e.Price.ResourcePrice(ctx, w)
+	if err != nil {
+		out.warnings = append(out.warnings, fmt.Sprintf("pricing unavailable for %s: %v", w.Ref(), err))
+		price = model.ResourcePrice{}
+	}
+
+	for _, c := range w.Containers {
+		st, ok := stats[c.Name]
+		if !ok {
+			continue // no usage data for this container — skip it
+		}
+
+		current := model.ResourceSpec{Requests: c.Requests, Limits: c.Limits}
+		proposed := rightsizer.Recommend(current, st, e.Policy)
+		savings := costmodel.MonthlySavings(current, proposed, price, w.Replicas)
+
+		// Noise filter: skip recommendations that change essentially nothing or save a trivial
+		// amount. A "512Mi→513Mi, $0/mo" row is just clutter.
+		if isNoise(current, proposed, savings) {
+			continue
+		}
+
+		out.recs = append(out.recs, model.Recommendation{
+			Workload:       w,
+			ContainerName:  c.Name,
+			Current:        current,
+			Proposed:       proposed,
+			MonthlySavings: savings,
+			Confidence:     rightsizer.Confidence(st),
+			Tier:           st.Tier,
+			Usage:          st,
+			Evidence:       buildEvidence(st),
+			Explanation:    buildExplanation(current, proposed, st, price, e.Policy),
+		})
+		if savings > 0 {
+			out.waste += savings
+		}
+	}
+	return out
 }
 
 // dominantTier returns the evidence tier backing the most recommendations (the honest headline
@@ -177,16 +220,17 @@ func abs64(v int64) int64 {
 }
 
 // buildEvidence composes the short, human-readable justification line. It is tier-aware: a
-// single live snapshot (Tier 0) is never dressed up as a percentile.
+// single live snapshot (Tier 0) is never dressed up as a percentile. It is a compact one-line
+// summary kept for JSON consumers; the human table shows the full distribution under --explain.
 //   - Tier 0:  "live snapshot · cpu 1435m, mem 4.9Gi · 1 pod sampled"
-//   - Tier 1+: "P95 cpu 280m, peak mem 0.9Gi over 14d · 1.2k samples"
+//   - Tier 1+: "p95 cpu 280m, peak mem 0.9Gi over 14d · 1.2k samples"
 func buildEvidence(st model.UsageStats) string {
 	cpu := int64(math.Round(st.CPUMillicores.P95))
 	if st.Tier == model.TierSnapshot {
 		return fmt.Sprintf("live snapshot · cpu %s, mem %s · %s",
 			formatMillicores(cpu), formatMem(st.MemoryBytes.Max), pods(st.Samples))
 	}
-	return fmt.Sprintf("P95 cpu %s, peak mem %s over %s · %s samples",
+	return fmt.Sprintf("p95 cpu %s, peak mem %s over %s · %s samples",
 		formatMillicores(cpu), formatMem(st.MemoryBytes.Max),
 		formatWindow(st.Window), formatCount(st.Samples))
 }
@@ -240,14 +284,14 @@ func formatMem(bytes float64) string {
 	}
 }
 
-// buildExplanation composes the step-by-step derivation shown under --explain.
+// buildExplanation composes the derivation lines shown under --explain. The "why" block (in
+// the report) already shows requested/observed/proposed/savings; these lines explain the
+// FORMULA behind the proposal (percentile + headroom) and the price basis.
 func buildExplanation(
-	w model.Workload,
 	current, proposed model.ResourceSpec,
 	st model.UsageStats,
 	price model.ResourcePrice,
 	policy model.Policy,
-	savings float64,
 ) []string {
 	cpuHeadroom := policy.CPUHeadroom
 	memHeadroom := policy.MemoryHeadroom
@@ -256,40 +300,27 @@ func buildExplanation(
 		cpuHeadroom += policy.SnapshotHeadroom
 		memHeadroom += policy.SnapshotHeadroom
 		lines = append(lines,
-			fmt.Sprintf("Data: live snapshot from metrics-server (%s) — current usage only, not a peak.", pods(st.Samples)),
-			"Because a single snapshot can miss peaks, an extra safety buffer is applied and values are floored.")
-	} else {
-		lines = append(lines,
-			fmt.Sprintf("Data: tier %s over %s with %s samples.", st.Tier, formatWindow(st.Window), formatCount(st.Samples)))
+			"single snapshot can miss peaks, so an extra safety buffer is applied and requests are floored.")
 	}
 	lines = append(lines,
-		fmt.Sprintf("CPU request = cpu %s * (1 + %.0f%% headroom) = %s (was %s).",
+		fmt.Sprintf("cpu request = p95 %s × (1 + %.0f%% headroom) = %s (was %s).",
 			formatMillicores(int64(math.Round(st.CPUMillicores.P95))),
 			cpuHeadroom*100,
 			formatMillicores(proposed.Requests.CPUMillicores),
 			formatMillicores(current.Requests.CPUMillicores)),
-		fmt.Sprintf("Memory request = peak %s * (1 + %.0f%% headroom) = %s (was %s).",
+		fmt.Sprintf("mem request = peak %s × (1 + %.0f%% headroom) = %s (was %s).",
 			formatMem(st.MemoryBytes.Max),
 			memHeadroom*100,
 			formatMem(float64(proposed.Requests.MemoryBytes)),
 			formatMem(float64(current.Requests.MemoryBytes))))
 
 	if price.Source != "" {
-		lines = append(lines, fmt.Sprintf("Price: $%.2f/core-month, $%.2f/GiB-month (%s).",
+		lines = append(lines, fmt.Sprintf("price = $%.2f/core-month, $%.2f/GiB-month (%s).",
 			price.CPUCoreMonth, price.MemGiBMonth, price.Source))
 	} else {
-		lines = append(lines, fmt.Sprintf("Price: $%.2f/core-month, $%.2f/GiB-month.",
+		lines = append(lines, fmt.Sprintf("price = $%.2f/core-month, $%.2f/GiB-month.",
 			price.CPUCoreMonth, price.MemGiBMonth))
 	}
-
-	replicas := w.Replicas
-	if replicas <= 0 {
-		replicas = 1
-	}
-	lines = append(lines, fmt.Sprintf(
-		"Savings = (current - proposed cost) * %d replicas = $%.2f/month.",
-		replicas, savings))
-
 	return lines
 }
 

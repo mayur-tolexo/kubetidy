@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -69,6 +70,37 @@ func (s *spinner) update(status string) {
 	s.mu.Lock()
 	s.status = status
 	s.mu.Unlock()
+}
+
+// scanPhrases narrate the scan as it advances — a little personality for the wait. The phrase
+// is chosen by progress fraction, so it reads like a story from start to finish.
+var scanPhrases = []string{
+	"reading usage from the cluster…",
+	"crunching p50 / p95 / p99…",
+	"hunting over-provisioned pods…",
+	"pricing the waste in dollars…",
+	"checking memory for OOM traps…",
+	"scoring cluster efficiency…",
+	"tidying up…",
+}
+
+// scanProgress renders a catchy progress line: a mini bar, the count, and a phrase that advances
+// with the scan, e.g. "⟦▰▰▰▰▰▱▱▱▱▱⟧ 51/102 · pricing the waste in dollars…".
+func scanProgress(done, total int) string {
+	const w = 14
+	if total < 1 {
+		total = 1
+	}
+	if done > total {
+		done = total
+	}
+	filled := done * w / total
+	bar := strings.Repeat("▰", filled) + strings.Repeat("▱", w-filled)
+	idx := done * len(scanPhrases) / total
+	if idx >= len(scanPhrases) {
+		idx = len(scanPhrases) - 1
+	}
+	return fmt.Sprintf("⟦%s⟧ %d/%d · %s", bar, done, total, scanPhrases[idx])
 }
 
 // finish halts the animation and clears the spinner line so the report renders cleanly.

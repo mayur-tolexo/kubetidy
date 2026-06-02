@@ -68,8 +68,10 @@ type TargetRef struct {
 // MetricHistory is the recorded usage for one metric (CPU or memory) of one container: the
 // summary percentiles plus the encoded decaying-histogram state needed to rehydrate exactly.
 type MetricHistory struct {
+	Avg float64 `json:"avg,omitempty"`
 	P50 float64 `json:"p50"`
 	P95 float64 `json:"p95"`
+	P99 float64 `json:"p99,omitempty"`
 	Max float64 `json:"max"`
 	// Histogram is the base64-encoded JSON of histogram.Snapshot, so the operator can resume
 	// exact percentile tracking after a restart. Consumers that only need summaries can ignore
@@ -172,8 +174,10 @@ func statusToMap(s Status) map[string]any {
 
 func metricToMap(m MetricHistory) map[string]any {
 	return map[string]any{
+		"avg":       m.Avg,
 		"p50":       m.P50,
 		"p95":       m.P95,
+		"p99":       m.P99,
 		"max":       m.Max,
 		"histogram": m.Histogram,
 	}
@@ -210,8 +214,10 @@ func statusFromMap(m map[string]any) Status {
 
 func metricFromMap(m map[string]any) MetricHistory {
 	return MetricHistory{
+		Avg:       nestedFloat(m, "avg"),
 		P50:       nestedFloat(m, "p50"),
 		P95:       nestedFloat(m, "p95"),
+		P99:       nestedFloat(m, "p99"),
 		Max:       nestedFloat(m, "max"),
 		Histogram: nestedString(m, "histogram"),
 	}

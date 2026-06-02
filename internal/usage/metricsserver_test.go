@@ -106,15 +106,15 @@ func TestMetricsServerProviderUsage(t *testing.T) {
 			wantNames: map[string]model.UsageStats{
 				"api": {
 					// avg cpu = (200+400)/2 = 300m; avg mem = (100+300)/2 = 200Mi
-					CPUMillicores: model.Percentiles{P50: 300, P95: 300, Max: 300},
-					MemoryBytes:   model.Percentiles{P50: 200 * 1024 * 1024, P95: 200 * 1024 * 1024, Max: 200 * 1024 * 1024},
+					CPUMillicores: model.Percentiles{Avg: 300, P50: 300, P95: 300, P99: 300, Max: 300},
+					MemoryBytes:   model.Percentiles{Avg: 200 * 1024 * 1024, P50: 200 * 1024 * 1024, P95: 200 * 1024 * 1024, P99: 200 * 1024 * 1024, Max: 200 * 1024 * 1024},
 					Samples:       2,
 					Tier:          model.TierSnapshot,
 				},
 				"sidecar": {
 					// avg cpu = (50+150)/2 = 100m; avg mem = (20+60)/2 = 40Mi
-					CPUMillicores: model.Percentiles{P50: 100, P95: 100, Max: 100},
-					MemoryBytes:   model.Percentiles{P50: 40 * 1024 * 1024, P95: 40 * 1024 * 1024, Max: 40 * 1024 * 1024},
+					CPUMillicores: model.Percentiles{Avg: 100, P50: 100, P95: 100, P99: 100, Max: 100},
+					MemoryBytes:   model.Percentiles{Avg: 40 * 1024 * 1024, P50: 40 * 1024 * 1024, P95: 40 * 1024 * 1024, P99: 40 * 1024 * 1024, Max: 40 * 1024 * 1024},
 					Samples:       2,
 					Tier:          model.TierSnapshot,
 				},
@@ -127,8 +127,8 @@ func TestMetricsServerProviderUsage(t *testing.T) {
 			},
 			wantNames: map[string]model.UsageStats{
 				"api": {
-					CPUMillicores: model.Percentiles{P50: 250, P95: 250, Max: 250},
-					MemoryBytes:   model.Percentiles{P50: 128 * 1024 * 1024, P95: 128 * 1024 * 1024, Max: 128 * 1024 * 1024},
+					CPUMillicores: model.Percentiles{Avg: 250, P50: 250, P95: 250, P99: 250, Max: 250},
+					MemoryBytes:   model.Percentiles{Avg: 128 * 1024 * 1024, P50: 128 * 1024 * 1024, P95: 128 * 1024 * 1024, P99: 128 * 1024 * 1024, Max: 128 * 1024 * 1024},
 					Samples:       1,
 					Tier:          model.TierSnapshot,
 				},

@@ -74,8 +74,9 @@ func (p *metricsServerProvider) Usage(ctx context.Context, w model.Workload) (ma
 		cpu := a.cpuMillis / float64(a.pods)
 		mem := a.memBytes / float64(a.pods)
 		out[name] = model.UsageStats{
-			CPUMillicores: model.Percentiles{P50: cpu, P95: cpu, Max: cpu},
-			MemoryBytes:   model.Percentiles{P50: mem, P95: mem, Max: mem},
+			// A single snapshot has no distribution — every statistic is the one reading.
+			CPUMillicores: model.Percentiles{Avg: cpu, P50: cpu, P95: cpu, P99: cpu, Max: cpu},
+			MemoryBytes:   model.Percentiles{Avg: mem, P50: mem, P95: mem, P99: mem, Max: mem},
 			Window:        0,
 			Samples:       a.pods,
 			Tier:          model.TierSnapshot,

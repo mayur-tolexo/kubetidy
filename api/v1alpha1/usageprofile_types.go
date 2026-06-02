@@ -15,10 +15,16 @@ type TargetRef struct {
 // MetricHistory is the recorded usage for one metric (CPU or memory) of one container: the
 // summary percentiles plus the encoded decaying-histogram state used to rehydrate exactly.
 type MetricHistory struct {
+	// Avg is the mean observed value (CPU in millicores, memory in bytes).
+	// +optional
+	Avg float64 `json:"avg,omitempty"`
 	// P50 is the median observed value (CPU in millicores, memory in bytes).
 	P50 float64 `json:"p50"`
 	// P95 is the 95th-percentile observed value.
 	P95 float64 `json:"p95"`
+	// P99 is the 99th-percentile observed value.
+	// +optional
+	P99 float64 `json:"p99,omitempty"`
 	// Max is the largest observed value.
 	Max float64 `json:"max"`
 	// Histogram is the base64-encoded decaying-histogram snapshot, so the operator can resume
