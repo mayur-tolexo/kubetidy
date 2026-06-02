@@ -84,6 +84,10 @@ func Table(w io.Writer, result model.ScanResult, opts Options) error {
 		b.WriteString("\n")
 		writeRecommendations(&b, recs, opts)
 		b.WriteString("\n")
+		if len(recs) < len(result.Recommendations) {
+			fmt.Fprintf(&b, "  … showing top %d of %d by savings · --top 0 for all\n\n",
+				len(recs), len(result.Recommendations))
+		}
 		writeLegend(&b, opts)
 	} else {
 		b.WriteString("\n")
@@ -161,51 +165,105 @@ func writeWarnings(b *strings.Builder, warnings []string, opts Options) {
 	}
 }
 
-// writeRecommendations emits the aligned recommendations table with a header row and an
-// indented evidence line under each recommendation.
+// writeRecommendations renders one card per recommendation. A flat table cannot hold the full
+// usage distribution (avg/p95/p99/peak for cpu AND mem) plus the request→proposed change; a card
+// can, and putting the long workload name on its own line keeps everything aligned and readable.
 func writeRecommendations(b *strings.Builder, recs []model.Recommendation, opts Options) {
-	// Render header + all rows through a SINGLE tabwriter so columns align across the whole
-	// table, then splice each evidence line in under its row afterward (evidence lines must
-	// not participate in column-width calculation).
-	var buf strings.Builder
-	tw := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
-	// Flushing to an in-memory strings.Builder cannot fail.
-	_, _ = fmt.Fprintf(tw, "  WORKLOAD\tREQUESTED\tUSES\tPROPOSED\tSAVE\tCONF\n")
-	for _, rec := range recs {
-		_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\n",
-			workloadLabel(rec),
-			requestedCell(rec),
-			usesCell(rec),
-			proposedCell(rec),
-			savingsCell(rec),
-			confidenceCell(rec),
-		)
+	for i, rec := range recs {
+		writeCard(b, rec, opts)
+		if i < len(recs)-1 {
+			b.WriteString("\n")
+		}
+	}
+}
+
+// writeCard renders a single recommendation as a self-contained block: a heading (workload,
+// savings, confidence), the observed usage distribution beside the request→proposed change, and
+// a basis line stating the data it rests on.
+//
+//	▸ neevai-rackbank-console · Deployment/neevai-system   save $60/mo · ▒ low 34%
+//	         avg    p95    p99    peak    request → proposed
+//	  cpu    1m     2m     2m     2m      2000m → 10m
+//	  mem    142Mi  149Mi  149Mi  149Mi  4Gi → 171Mi
+//	  basis  5h history · 201 samples · cpu sized to p95, mem to peak
+func writeCard(b *strings.Builder, rec model.Recommendation, opts Options) {
+	head := fmt.Sprintf("▸ %s · %s/%s   save %s · %s",
+		rec.Workload.Name, rec.Workload.Kind, rec.Workload.Namespace, savingsCell(rec), confidenceCell(rec))
+	if opts.Color {
+		fmt.Fprintf(b, "%s%s%s\n", ansiBold, head, ansiReset)
+	} else {
+		b.WriteString(head + "\n")
+	}
+
+	st := rec.Usage
+	cpuChange := fmt.Sprintf("%dm → %dm", rec.Current.Requests.CPUMillicores, rec.Proposed.Requests.CPUMillicores)
+	memChange := fmt.Sprintf("%s → %s", formatMem(rec.Current.Requests.MemoryBytes), formatMem(rec.Proposed.Requests.MemoryBytes))
+
+	var tb strings.Builder
+	tw := tabwriter.NewWriter(&tb, 0, 0, 2, ' ', 0)
+	if st.Tier == model.TierSnapshot {
+		_, _ = fmt.Fprint(tw, "  \tnow\trequest → proposed\n")
+		_, _ = fmt.Fprintf(tw, "  cpu\t%s\t%s\n", distCPU(st.CPUMillicores.P95), cpuChange)
+		_, _ = fmt.Fprintf(tw, "  mem\t%s\t%s\n", distMem(st.MemoryBytes.Max), memChange)
+	} else {
+		_, _ = fmt.Fprint(tw, "  \tavg\tp95\tp99\tpeak\trequest → proposed\n")
+		c := st.CPUMillicores
+		_, _ = fmt.Fprintf(tw, "  cpu\t%s\t%s\t%s\t%s\t%s\n", distCPU(c.Avg), distCPU(c.P95), distCPU(c.P99), distCPU(c.Max), cpuChange)
+		m := st.MemoryBytes
+		_, _ = fmt.Fprintf(tw, "  mem\t%s\t%s\t%s\t%s\t%s\n", distMem(m.Avg), distMem(m.P95), distMem(m.P99), distMem(m.Max), memChange)
 	}
 	_ = tw.Flush()
+	if opts.Color {
+		// Dim the distribution block so the heading + change stand out.
+		for _, ln := range strings.Split(strings.TrimRight(tb.String(), "\n"), "\n") {
+			fmt.Fprintf(b, "%s%s%s\n", ansiDim, ln, ansiReset)
+		}
+	} else {
+		b.WriteString(tb.String())
+	}
 
-	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
-	if len(lines) > 0 {
+	if basis := basisLine(rec); basis != "" {
 		if opts.Color {
-			b.WriteString(ansiBold + lines[0] + ansiReset + "\n")
+			fmt.Fprintf(b, "  %sbasis  %s%s\n", ansiDim, basis, ansiReset)
 		} else {
-			b.WriteString(lines[0] + "\n")
+			fmt.Fprintf(b, "  basis  %s\n", basis)
 		}
 	}
-	// One clean line per workload — no per-row evidence sub-line (it turned the table into a
-	// wall of text). The full usage distribution lives in `--explain <workload>`.
-	for i := range recs {
-		if i+1 < len(lines) {
-			b.WriteString(lines[i+1] + "\n")
-		}
+}
+
+// basisLine states the data a recommendation rests on and how the proposal was sized. It calls
+// out when memory was kept conservative because history is too young to trust the observed peak
+// (the proposal sits well above peak) — the OOM-safety the rightsizer applies.
+func basisLine(rec model.Recommendation) string {
+	st := rec.Usage
+	if st.Tier == model.TierSnapshot {
+		return "single live snapshot — memory kept conservative (no historical peak, extra OOM safety)"
 	}
+	parts := []string{}
+	if st.Window > 0 {
+		parts = append(parts, formatWindow(st.Window)+" history")
+	}
+	if st.Samples > 0 {
+		parts = append(parts, formatCount(st.Samples)+" samples")
+	}
+	// If proposed memory sits well above the observed peak, the conservative (immature-history)
+	// safety buffer is active — say so, so the larger number reads as deliberate, not a bug.
+	peak := st.MemoryBytes.Max
+	prop := float64(rec.Proposed.Requests.MemoryBytes)
+	if peak > 0 && prop > peak*1.30 {
+		parts = append(parts, "memory kept conservative (short history — extra OOM safety)")
+	} else {
+		parts = append(parts, "cpu→p95, mem→peak (+headroom)")
+	}
+	return strings.Join(parts, " · ")
 }
 
 // writeLegend emits the short column/confidence legend footer.
 func writeLegend(b *strings.Builder, opts Options) {
 	lines := []string{
-		"values are cpu/mem · USES = p95 cpu / peak mem (what PROPOSED is sized to) · SAVE = $/mo (↑ grow = reliability)",
-		"CONF = confidence ▒ low · ▓ med · █ high + score% — grows with data history (window/samples shown above).",
-		"→ run  kubetidy scan --explain <workload>  for the full usage distribution + exact sample count.",
+		"each card: observed usage (avg/p95/p99/peak) for cpu & mem, then the request → proposed change.",
+		"sized to: cpu = p95 + headroom, mem = peak + headroom · CONF ▒ low ▓ med █ high + score%, grows with history.",
+		"→ run  kubetidy scan --explain <workload>  for the full derivation.",
 	}
 	for _, l := range lines {
 		if opts.Color {
@@ -214,33 +272,6 @@ func writeLegend(b *strings.Builder, opts Options) {
 			b.WriteString("  " + l + "\n")
 		}
 	}
-}
-
-// requestedCell / usesCell / proposedCell render the three columns that tell the reduction's
-// story left-to-right as "cpu/mem": what the workload ASKS for, what it actually USES (the p95
-// cpu / peak mem the new request is sized to), and what we PROPOSE. Seeing requested ≫ uses is
-// the at-a-glance "why" behind every recommendation.
-func requestedCell(rec model.Recommendation) string {
-	return cpuMemPair(float64(rec.Current.Requests.CPUMillicores), rec.Current.Requests.MemoryBytes)
-}
-
-func usesCell(rec model.Recommendation) string {
-	cpu := rec.Usage.CPUMillicores.P95 // CPU is sized to p95
-	mem := rec.Usage.MemoryBytes.Max   // memory is sized to peak (OOM-safe)
-	if cpu <= 0 && mem <= 0 {
-		return "—" // usage not available (e.g. profile not populated yet)
-	}
-	return cpuMemPair(cpu, int64(mem+0.5))
-}
-
-func proposedCell(rec model.Recommendation) string {
-	return cpuMemPair(float64(rec.Proposed.Requests.CPUMillicores), rec.Proposed.Requests.MemoryBytes)
-}
-
-// cpuMemPair renders a "cpu/mem" pair compactly, e.g. "2000m/4Gi" or "13m/147Mi". CPU stays in
-// millicores (never folded to "cores") so the columns line up and read uniformly.
-func cpuMemPair(cpuMillis float64, memBytes int64) string {
-	return fmt.Sprintf("%s/%s", cpuMilli(cpuMillis), formatMem(memBytes))
 }
 
 // savingsCell renders the SAVE column. A positive saving reads "$210/mo". A negative

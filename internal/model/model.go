@@ -146,6 +146,13 @@ type Policy struct {
 	// emitted when it REDUCES a request (we trust "you asked for way more than you use"
 	// from one sample, but not "you should grow" — that needs historical peaks).
 	DownsizeOnlyOnSnapshot bool
+
+	// MemoryImmatureSafety is EXTRA memory headroom applied in inverse proportion to data
+	// maturity: at maturity 0 (a few minutes of history) the full amount is added on top of
+	// MemoryHeadroom; at maturity 1 (a representative window of samples) none is. Memory is the
+	// OOM-dangerous resource and a short window can miss the true peak, so a young history must
+	// not justify an aggressive memory cut. CPU is left lean — it only throttles, never OOMs.
+	MemoryImmatureSafety float64
 }
 
 // DefaultPolicy returns kubetidy's opinionated defaults (see design spec §6).
@@ -161,6 +168,7 @@ func DefaultPolicy() Policy {
 		MinCPURequestMillicores: 10,
 		MinMemoryRequestBytes:   32 * 1024 * 1024, // 32Mi
 		DownsizeOnlyOnSnapshot:  true,
+		MemoryImmatureSafety:    1.0, // up to +100% extra memory headroom while history is young
 	}
 }
 

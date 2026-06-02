@@ -29,6 +29,10 @@ func TestRecommend(t *testing.T) {
 				CPUMillicores: model.Percentiles{P95: 280},
 				MemoryBytes:   model.Percentiles{Max: 900 * mib},
 				Tier:          model.TierHistorical,
+				// Mature history (long window + many samples) so memory uses the base headroom,
+				// not the immature-history safety buffer.
+				Window:  14 * 24 * time.Hour,
+				Samples: 100_000,
 			},
 			policy: model.DefaultPolicy(),
 			want: model.ResourceSpec{
@@ -271,7 +275,9 @@ func TestRecommend(t *testing.T) {
 				CPUMillicores: model.Percentiles{P95: 200},
 				MemoryBytes:   model.Percentiles{Max: 100 * mib},
 				Tier:          model.TierHistorical,
-				Samples:       30,
+				// Mature history so memory uses the base headroom (not the safety buffer).
+				Window:  14 * 24 * time.Hour,
+				Samples: 100_000,
 			},
 			policy: model.DefaultPolicy(),
 			want: model.ResourceSpec{
@@ -476,4 +482,39 @@ func floatEq(a, b float64) bool {
 		d = -d
 	}
 	return d < 1e-9
+}
+
+func TestRecommend_ImmatureMemorySafety(t *testing.T) {
+	const day = 24 * time.Hour
+	current := model.ResourceSpec{Requests: model.ResourceAmounts{CPUMillicores: 2000, MemoryBytes: 4 * 1024 * mib}}
+	usage := func(window time.Duration, samples int64) model.UsageStats {
+		return model.UsageStats{
+			CPUMillicores: model.Percentiles{P95: 2},
+			MemoryBytes:   model.Percentiles{Max: 100 * mib},
+			Tier:          model.TierHistorical,
+			Window:        window, Samples: samples,
+		}
+	}
+
+	// Young history: memory must keep a large cushion well above peak (no aggressive cut → no OOM).
+	young := Recommend(current, usage(5*time.Hour, 200), model.DefaultPolicy())
+	if young.Requests.MemoryBytes <= int64(100*mib*1.5) {
+		t.Errorf("immature mem = %d, want a large safety cushion well above peak (100Mi)", young.Requests.MemoryBytes)
+	}
+
+	// Mature history: memory tightens to ~peak + base headroom (100Mi * 1.15).
+	mature := Recommend(current, usage(7*day, 100_000), model.DefaultPolicy())
+	if mature.Requests.MemoryBytes != roundUpMiB(int64(100*mib*1.15)) {
+		t.Errorf("mature mem = %d, want base headroom %d", mature.Requests.MemoryBytes, roundUpMiB(int64(100*mib*1.15)))
+	}
+
+	// The cushion shrinks monotonically as history matures.
+	if young.Requests.MemoryBytes <= mature.Requests.MemoryBytes {
+		t.Errorf("young mem %d should exceed mature mem %d", young.Requests.MemoryBytes, mature.Requests.MemoryBytes)
+	}
+
+	// CPU is left lean regardless of maturity (under-sizing only throttles, never OOMs).
+	if young.Requests.CPUMillicores != mature.Requests.CPUMillicores {
+		t.Errorf("cpu should not change with maturity: young %d, mature %d", young.Requests.CPUMillicores, mature.Requests.CPUMillicores)
+	}
 }

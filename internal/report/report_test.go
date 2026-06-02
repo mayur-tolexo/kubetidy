@@ -68,7 +68,12 @@ func snapshotFixture() model.ScanResult {
 				MonthlySavings: 12,
 				Confidence:     model.Confidence{Score: 0.35, Reason: "tier 0, 1 sample"},
 				Tier:           model.TierSnapshot,
-				Evidence:       "live cpu 40m, mem 130Mi (single snapshot)",
+				Usage: model.UsageStats{
+					CPUMillicores: model.Percentiles{Avg: 40, P95: 40, P99: 40, Max: 40},
+					MemoryBytes:   model.Percentiles{Avg: 130 * mib, P95: 130 * mib, P99: 130 * mib, Max: 130 * mib},
+					Samples:       1, Tier: model.TierSnapshot,
+				},
+				Evidence: "live cpu 40m, mem 130Mi (single snapshot)",
 			},
 		},
 		EfficiencyScore:   58,
@@ -154,40 +159,25 @@ func TestTableRecommendationRow(t *testing.T) {
 	}
 	out := buf.String()
 
-	// Header columns are present (REQUESTED → USES → PROPOSED story).
-	for _, col := range []string{"WORKLOAD", "REQUESTED", "USES", "PROPOSED", "SAVE", "CONF"} {
-		if !strings.Contains(out, col) {
-			t.Errorf("missing column header %q\n--- got ---\n%s", col, out)
+	// Card heading: workload, location, savings, confidence.
+	for _, want := range []string{"▸ checkout-api", "Deployment/default", "save $210/mo", "█ high 96%"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("card heading missing %q\n--- got ---\n%s", want, out)
 		}
 	}
-	// Highest savings (checkout-api, $210) must appear; search-api ($90) truncated.
-	if !strings.Contains(out, "checkout-api") {
-		t.Errorf("top rec missing\n--- got ---\n%s", out)
-	}
+	// TopN=1 keeps the top rec (checkout-api, $210) and drops search-api ($90).
 	if strings.Contains(out, "search-api") {
 		t.Errorf("TopN=1 should truncate lower rec\n--- got ---\n%s", out)
 	}
-	// REQUESTED cpu/mem and PROPOSED cpu/mem cells (4Gi -> ~1.1Gi adaptive memory).
-	if !strings.Contains(out, "2000m/4Gi") {
-		t.Errorf("missing requested cell\n--- got ---\n%s", out)
+	// The distribution block: header + the p95 cpu value, and the request → proposed change.
+	for _, want := range []string{"avg", "p95", "p99", "peak", "request → proposed", "280m", "2000m → 320m", "4Gi → 1.1Gi"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("card body missing %q\n--- got ---\n%s", want, out)
+		}
 	}
-	if !strings.Contains(out, "320m/1.1Gi") {
-		t.Errorf("missing proposed cell\n--- got ---\n%s", out)
-	}
-	// USES shows the p95 cpu / peak mem the proposal is sized to (fixture p95=280m).
-	if !strings.Contains(out, "280m/") {
-		t.Errorf("missing uses cell\n--- got ---\n%s", out)
-	}
-	if !strings.Contains(out, "$210/mo") {
-		t.Errorf("missing savings\n--- got ---\n%s", out)
-	}
-	if !strings.Contains(out, "█ high 96%") {
-		t.Errorf("missing confidence band + percent\n--- got ---\n%s", out)
-	}
-	// The table is one clean line per workload — the dense per-row evidence line was removed
-	// (it now lives under --explain), so it must NOT appear here.
-	if strings.Contains(out, "└") {
-		t.Errorf("table should not render a per-row evidence line\n--- got ---\n%s", out)
+	// Basis line states the data backing it.
+	if !strings.Contains(out, "basis") || !strings.Contains(out, "14d history") {
+		t.Errorf("missing basis line\n--- got ---\n%s", out)
 	}
 }
 
@@ -267,7 +257,7 @@ func TestTableLegendShown(t *testing.T) {
 		t.Fatalf("Table: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "CONF = confidence") {
+	if !strings.Contains(out, "each card:") {
 		t.Errorf("missing legend\n--- got ---\n%s", out)
 	}
 }
