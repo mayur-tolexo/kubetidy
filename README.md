@@ -200,7 +200,12 @@ See [docs/design/operator.md](docs/design/operator.md) for the design.
 ## High-confidence scans with Prometheus (Tier 1)
 
 Already run Prometheus? kubetidy auto-detects the common in-cluster service names, so plain
-`kubectl tidy scan` upgrades to Tier 1 automatically. Or point it explicitly:
+`kubectl tidy scan` upgrades to Tier 1 automatically. Because `scan` runs on your machine (where
+in-cluster Service DNS doesn't resolve), it reaches an auto-detected Prometheus — and OpenCost —
+**through the Kubernetes API server proxy**, reusing your kubeconfig's credentials: no
+port-forward, works wherever `kubectl` works. It validates the endpoint answers before using it,
+so a detected-but-unreachable service falls back cleanly instead of reporting empty results. Or
+point it explicitly (used as-is, e.g. a `localhost` port-forward):
 
 ```sh
 kubectl tidy scan --prometheus-url http://prometheus.monitoring.svc:9090

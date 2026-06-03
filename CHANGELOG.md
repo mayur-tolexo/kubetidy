@@ -7,6 +7,17 @@ fixes/UX).
 
 ## [Unreleased]
 
+### Fixed
+- **Auto-detected Prometheus/OpenCost now reachable from `scan`.** Detection returned an
+  in-cluster Service DNS name (`*.svc`) that doesn't resolve on the user's machine, so every
+  query failed with "no such host" and the scan silently reported a misleading `100/100, $0`.
+  `scan` now reaches an auto-detected Prometheus or OpenCost through the **Kubernetes API server
+  proxy** (reusing the kubeconfig's address + credentials — works wherever kubectl works, no
+  port-forward), and **validates reachability** before committing to Tier 1/Tier 2; an
+  unreachable endpoint falls back to the operator / metrics-server / derived pricing with a clear
+  note instead of producing empty results. An explicit `--prometheus-url` / `--opencost-url` is
+  still used directly.
+
 ### Added
 - **`kubetidy init --with-opencost`** — deploy a complete Tier-2 cost stack into the cluster from
   embedded manifests, so scans get precise allocated cost out of the box. OpenCost needs

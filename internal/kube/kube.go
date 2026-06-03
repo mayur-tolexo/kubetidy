@@ -13,17 +13,22 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
 // Clients bundles the Kubernetes API clients and resolved context metadata
 // that the rest of kubetidy needs.
 type Clients struct {
-	Kube      kubernetes.Interface
-	Metrics   metricsv.Interface
-	Dynamic   dynamic.Interface
-	Context   string
-	Namespace string
+	Kube    kubernetes.Interface
+	Metrics metricsv.Interface
+	Dynamic dynamic.Interface
+	// RESTConfig is the resolved client config. It's kept so callers can reach in-cluster
+	// services (e.g. Prometheus) through the API server proxy, which works from outside the
+	// cluster where in-cluster Service DNS does not resolve.
+	RESTConfig *rest.Config
+	Context    string
+	Namespace  string
 }
 
 // Load builds API clients from the user's kubeconfig, honoring the active
@@ -85,11 +90,12 @@ func Load(contextOverride, namespaceOverride string) (*Clients, error) {
 	}
 
 	return &Clients{
-		Kube:      kubeClient,
-		Metrics:   metricsClient,
-		Dynamic:   dynamicClient,
-		Context:   contextName,
-		Namespace: namespace,
+		Kube:       kubeClient,
+		Metrics:    metricsClient,
+		Dynamic:    dynamicClient,
+		RESTConfig: restConfig,
+		Context:    contextName,
+		Namespace:  namespace,
 	}, nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -160,11 +161,11 @@ func selectUsageProvider(clients *kube.Clients, f *scanFlags, warnings *[]string
 		return usage.NewMetricsServerProvider(clients.Metrics)
 	}
 
-	if url := usage.DetectPrometheus(clients.Kube); url != "" {
-		if p, err := usage.NewPrometheusProvider(url, f.window); err == nil {
-			*warnings = append(*warnings, fmt.Sprintf("auto-detected Prometheus at %s (Tier 1)", url))
-			return p
-		}
+	if p, note, ok := prometheusAutoProvider(clients, f.window); ok {
+		*warnings = append(*warnings, fmt.Sprintf("auto-detected Prometheus (%s) — Tier 1", note))
+		return p
+	} else if note != "" {
+		*warnings = append(*warnings, note)
 	}
 
 	// No Prometheus: prefer the kubetidy operator's recorded history (Tier 0) when it's
@@ -184,9 +185,48 @@ func selectUsageProvider(clients *kube.Clients, f *scanFlags, warnings *[]string
 	return usage.NewMetricsServerProvider(clients.Metrics)
 }
 
-// detectOpenCost is a seam over pricing.DetectOpenCost so tests can point auto-detection at a
-// reachable endpoint (the real detector returns an in-cluster URL that a unit test can't reach).
-var detectOpenCost = pricing.DetectOpenCost
+// prometheusAutoProvider auto-detects an in-cluster Prometheus and returns a Tier-1 provider
+// that reaches it through the Kubernetes API server proxy — which works from the user's machine,
+// where in-cluster Service DNS does not resolve. It validates reachability (a trivial query)
+// before committing, so an unreachable or wrong endpoint falls through to the operator /
+// metrics-server instead of silently producing empty, misleading results. The returned note is
+// the source label on success, or a fall-back reason when a service was found but unusable
+// (empty otherwise). It is a seam so tests can inject a reachable provider without a cluster.
+var prometheusAutoProvider = func(clients *kube.Clients, window string) (usage.Provider, string, bool) {
+	ep, ok := usage.DetectPrometheusEndpoint(clients.Kube)
+	if !ok {
+		return nil, "", false
+	}
+	p, err := usage.NewPrometheusProviderViaAPIProxy(clients.RESTConfig, ep, window)
+	if err != nil {
+		return nil, fmt.Sprintf("found Prometheus service %s/%s but could not build a client (%v); falling back",
+			ep.Namespace, ep.Service, err), false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	if !usage.Reachable(ctx, p) {
+		return nil, fmt.Sprintf("found Prometheus service %s/%s but it did not answer queries; falling back to operator/metrics-server",
+			ep.Namespace, ep.Service), false
+	}
+	return p, fmt.Sprintf("%s/%s:%d via the API server proxy", ep.Namespace, ep.Service, ep.Port), true
+}
+
+// openCostAutoProvider mirrors prometheusAutoProvider for cost: it auto-detects an in-cluster
+// OpenCost/Kubecost and returns a Tier-2 provider that reaches it through the API server proxy.
+// NewOpenCostProviderViaAPIProxy already queries the allocation API at construction, so a
+// non-answering endpoint yields ok=false and we fall back to derived pricing. Seam for tests.
+var openCostAutoProvider = func(ctx context.Context, clients *kube.Clients, window string) (pricing.Provider, string, bool) {
+	ep, ok := pricing.DetectOpenCostEndpoint(clients.Kube)
+	if !ok {
+		return nil, "", false
+	}
+	p, err := pricing.NewOpenCostProviderViaAPIProxy(ctx, clients.RESTConfig, ep, window)
+	if err != nil {
+		return nil, fmt.Sprintf("found OpenCost service %s/%s but it did not answer (%v); using derived node pricing",
+			ep.Namespace, ep.Service, err), false
+	}
+	return p, fmt.Sprintf("%s/%s:%d via the API server proxy", ep.Namespace, ep.Service, ep.Port), true
+}
 
 // selectPriceProvider picks the cost source, mirroring selectUsageProvider:
 //   - an explicit --opencost-url forces Tier 2 (precise allocated cost);
@@ -216,11 +256,11 @@ func selectPriceProvider(ctx context.Context, clients *kube.Clients, f *scanFlag
 		return fallback
 	}
 
-	if url := detectOpenCost(clients.Kube); url != "" {
-		if p, err := pricing.NewOpenCostProvider(ctx, url, f.window); err == nil {
-			*warnings = append(*warnings, fmt.Sprintf("auto-detected OpenCost at %s (Tier 2 cost)", url))
-			return p
-		}
+	if p, note, ok := openCostAutoProvider(ctx, clients, f.window); ok {
+		*warnings = append(*warnings, fmt.Sprintf("auto-detected OpenCost (%s) — Tier 2 cost", note))
+		return p
+	} else if note != "" {
+		*warnings = append(*warnings, note)
 	}
 	return fallback
 }

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/client-go/rest"
+
 	"github.com/kubetidy/kubetidy/internal/model"
 )
 
@@ -62,6 +64,24 @@ type ocResponse struct {
 // back to configProvider when OpenCost is unreachable or returns no cost data (returns error).
 func NewOpenCostProvider(ctx context.Context, baseURL, window string) (Provider, error) {
 	return newOpenCostProviderWithClient(ctx, &http.Client{Timeout: 10 * time.Second}, baseURL, window)
+}
+
+// NewOpenCostProviderViaAPIProxy builds a Tier-2 provider that reaches an in-cluster OpenCost
+// Service through the Kubernetes API server proxy — so `scan`, running on the user's machine,
+// can talk to a Service whose DNS only resolves in-cluster, with no port-forward. It reuses the
+// kubeconfig's API server address and credentials.
+func NewOpenCostProviderViaAPIProxy(ctx context.Context, cfg *rest.Config, ep OpenCostEndpoint, window string) (Provider, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("opencost: nil rest config")
+	}
+	transport, err := rest.TransportFor(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("opencost: building API server transport: %w", err)
+	}
+	base := strings.TrimRight(cfg.Host, "/") +
+		fmt.Sprintf("/api/v1/namespaces/%s/services/%s:%d/proxy", ep.Namespace, ep.Service, ep.Port)
+	httpc := &http.Client{Transport: transport, Timeout: 15 * time.Second}
+	return newOpenCostProviderWithClient(ctx, httpc, base, window)
 }
 
 // newOpenCostProviderWithClient is the testable core: it accepts the HTTP client so tests can
