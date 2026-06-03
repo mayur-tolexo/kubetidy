@@ -8,6 +8,12 @@ fixes/UX).
 ## [Unreleased]
 
 ### Fixed
+- **OpenCost now actually produces cost with the bundled stack.** OpenCost computes allocation
+  cost by reading metrics back from Prometheus — its own exported pricing metrics plus
+  kube-state-metrics — but the bundled Prometheus scraped only cAdvisor, so OpenCost returned
+  zero cost and kubetidy fell back to derived pricing. The bundled Prometheus now also scrapes
+  OpenCost's `/metrics` and a **bundled minimal kube-state-metrics** (deployed alongside it),
+  closing the loop so Tier-2 cost computes (allow ~10–15 min after install to warm up).
 - **PromQL queries no longer break on workload names with dots/regex metacharacters.** Names like
   `rbd.csi.ceph.com-nodeplugin` produced an `unknown escape sequence` error (the `\.` from regex
   escaping is invalid inside a PromQL double-quoted string), so those workloads were skipped.

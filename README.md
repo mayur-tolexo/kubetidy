@@ -129,8 +129,10 @@ committed-use discounts included) instead of blended derived pricing:
 - [OpenCost](https://www.opencost.io/) (namespace, RBAC, deployment, service) — kubetidy
   auto-detects it at `opencost.opencost.svc:9003`.
 - OpenCost needs Prometheus, so **if you don't already run one, init also deploys a minimal
-  bundled Prometheus** (the `monitoring` namespace, scraping kubelet/cAdvisor) at
-  `prometheus-server.monitoring.svc:80`. One command, no prerequisites.
+  bundled Prometheus** (the `monitoring` namespace) at `prometheus-server.monitoring.svc:80`.
+- Plus a minimal **kube-state-metrics**, with Prometheus configured to scrape cAdvisor,
+  kube-state-metrics, **and OpenCost's own `/metrics`** — OpenCost reads those back to compute
+  cost, so this closes the loop and Tier-2 cost actually works. One command, no prerequisites.
 
 ```sh
 kubectl tidy init --with-opencost                          # OpenCost + bundled Prometheus

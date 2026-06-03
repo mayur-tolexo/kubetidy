@@ -83,6 +83,19 @@ data:
             regex: (.+)
             target_label: __metrics_path__
             replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor
+      # Scrape kube-state-metrics (kube_node_status_capacity, kube_pod_container_resource_*,
+      # ...) — OpenCost reads these to size and price workloads. Bundled alongside Prometheus.
+      - job_name: kube-state-metrics
+        static_configs:
+          - targets: ["kubetidy-kube-state-metrics.monitoring.svc:8080"]
+      # Scrape OpenCost's own /metrics. OpenCost exports pricing metrics (node_total_hourly_cost,
+      # etc.) that it then reads back from Prometheus to compute allocation cost — without this
+      # self-scrape, OpenCost's allocation API returns zero cost. Target is down until OpenCost
+      # is installed (init --with-opencost), which is harmless.
+      - job_name: opencost
+        honor_labels: true
+        static_configs:
+          - targets: ["opencost.opencost.svc:9003"]
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -147,3 +160,141 @@ spec:
     - name: http
       port: 80
       targetPort: 9090
+---
+# Minimal kube-state-metrics, bundled so OpenCost has the node/pod capacity metrics it needs to
+# size and price workloads. Read-only (get/list/watch). Prefixed "kubetidy-" so it never
+# collides with a user's own kube-state-metrics.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubetidy-kube-state-metrics
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/managed-by: kubetidy
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubetidy-kube-state-metrics
+  labels:
+    app.kubernetes.io/managed-by: kubetidy
+rules:
+  - apiGroups: [""]
+    resources:
+      - configmaps
+      - secrets
+      - nodes
+      - pods
+      - services
+      - serviceaccounts
+      - resourcequotas
+      - replicationcontrollers
+      - limitranges
+      - persistentvolumeclaims
+      - persistentvolumes
+      - namespaces
+      - endpoints
+    verbs: ["list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets", "daemonsets", "deployments", "replicasets"]
+    verbs: ["list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["cronjobs", "jobs"]
+    verbs: ["list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["list", "watch"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["list", "watch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses", "volumeattachments"]
+    verbs: ["list", "watch"]
+  - apiGroups: ["admissionregistration.k8s.io"]
+    resources: ["mutatingwebhookconfigurations", "validatingwebhookconfigurations"]
+    verbs: ["list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies", "ingressclasses", "ingresses"]
+    verbs: ["list", "watch"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["list", "watch"]
+  - apiGroups: ["certificates.k8s.io"]
+    resources: ["certificatesigningrequests"]
+    verbs: ["list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubetidy-kube-state-metrics
+  labels:
+    app.kubernetes.io/managed-by: kubetidy
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubetidy-kube-state-metrics
+subjects:
+  - kind: ServiceAccount
+    name: kubetidy-kube-state-metrics
+    namespace: monitoring
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubetidy-kube-state-metrics
+  namespace: monitoring
+  labels:
+    app: kubetidy-kube-state-metrics
+    app.kubernetes.io/managed-by: kubetidy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kubetidy-kube-state-metrics
+  template:
+    metadata:
+      labels:
+        app: kubetidy-kube-state-metrics
+    spec:
+      serviceAccountName: kubetidy-kube-state-metrics
+      containers:
+        - name: kube-state-metrics
+          image: registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.13.0
+          ports:
+            - name: http-metrics
+              containerPort: 8080
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubetidy-kube-state-metrics
+  namespace: monitoring
+  labels:
+    app: kubetidy-kube-state-metrics
+    app.kubernetes.io/managed-by: kubetidy
+spec:
+  selector:
+    app: kubetidy-kube-state-metrics
+  ports:
+    - name: http-metrics
+      port: 8080
+      targetPort: 8080
