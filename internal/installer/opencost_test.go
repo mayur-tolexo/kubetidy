@@ -86,9 +86,11 @@ func TestDecodePrometheusObjects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decodeObjects(prometheus) error: %v", err)
 	}
-	// Namespace, ServiceAccount, ClusterRole, ClusterRoleBinding, ConfigMap, Deployment, Service = 7.
-	if len(objs) != 7 {
-		t.Fatalf("prometheus manifest decoded to %d objects, want 7", len(objs))
+	// Prometheus: Namespace, ServiceAccount, ClusterRole, ClusterRoleBinding, ConfigMap,
+	// Deployment, Service (7). Bundled kube-state-metrics: ServiceAccount, ClusterRole,
+	// ClusterRoleBinding, Deployment, Service (5). Total 12.
+	if len(objs) != 12 {
+		t.Fatalf("prometheus manifest decoded to %d objects, want 12", len(objs))
 	}
 	kinds := map[string]bool{}
 	for _, o := range objs {
@@ -110,6 +112,23 @@ func TestPrometheusManifestServesDefaultEndpoint(t *testing.T) {
 	}
 	if !strings.Contains(m, "namespace: monitoring") {
 		t.Error("bundled Prometheus must be in the monitoring namespace")
+	}
+}
+
+func TestPrometheusManifestClosesOpenCostScrapeLoop(t *testing.T) {
+	// OpenCost computes cost only if Prometheus scrapes OpenCost's own /metrics and
+	// kube-state-metrics; assert both the scrape jobs and the bundled KSM are present.
+	m := string(PrometheusManifest())
+	for _, want := range []string{
+		"job_name: opencost",
+		"opencost.opencost.svc:9003",
+		"job_name: kube-state-metrics",
+		"kubetidy-kube-state-metrics.monitoring.svc:8080",
+		"image: registry.k8s.io/kube-state-metrics/kube-state-metrics",
+	} {
+		if !strings.Contains(m, want) {
+			t.Errorf("bundled Prometheus manifest missing %q", want)
+		}
 	}
 }
 
