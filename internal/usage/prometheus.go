@@ -94,7 +94,7 @@ func (p *prometheusProvider) Usage(ctx context.Context, w model.Workload) (map[s
 	if err != nil {
 		return nil, fmt.Errorf("invalid window %q: %w", p.window, err)
 	}
-	regex := podRegex(w.Name)
+	regex := promQLEscape(podRegex(w.Name))
 
 	cpuP50, err := p.queryVector(ctx, cpuQuery(0.5, w.Namespace, regex, p.window))
 	if err != nil {
@@ -266,6 +266,15 @@ func memAvgQuery(namespace, podRegex, window string) string {
 // formatQuantile renders a quantile without a trailing ".0" where possible (0.95, 0.5).
 func formatQuantile(q float64) string {
 	return strconv.FormatFloat(q, 'g', -1, 64)
+}
+
+// promQLEscape makes a regex safe to embed inside a PromQL double-quoted string. PromQL strings
+// process Go-style backslash escapes, so a regex from regexp.QuoteMeta (e.g. `^a\.b-.*` for a
+// workload named "a.b") must have its backslashes doubled — otherwise PromQL rejects `\.`, `\+`,
+// etc. as "unknown escape sequence". Real-cluster names with dots (e.g. CSI drivers like
+// "rbd.csi.ceph.com-nodeplugin") hit this.
+func promQLEscape(s string) string {
+	return strings.ReplaceAll(s, `\`, `\\`)
 }
 
 // podRegex builds an anchored PromQL regex matching pods owned by the named workload,

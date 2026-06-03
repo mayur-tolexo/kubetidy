@@ -66,6 +66,25 @@ func TestPodRegex(t *testing.T) {
 	}
 }
 
+func TestPromQLEscape(t *testing.T) {
+	// A workload name with a dot (e.g. a CSI driver) produces a QuoteMeta regex with `\.`, which
+	// is invalid inside a PromQL double-quoted string until its backslashes are doubled.
+	in := podRegex("rbd.csi.ceph.com-nodeplugin")
+	got := promQLEscape(in)
+	want := `^rbd\\.csi\\.ceph\\.com-nodeplugin-.*`
+	if got != want {
+		t.Errorf("promQLEscape(%q) = %q, want %q", in, got, want)
+	}
+	// The escaped form must not contain a lone backslash-dot (the sequence PromQL rejects).
+	if strings.Contains(strings.ReplaceAll(got, `\\`, ""), `\.`) {
+		t.Errorf("escaped regex still contains an invalid lone \\. : %q", got)
+	}
+	// Names without metacharacters are unchanged.
+	if got := promQLEscape("^web-.*"); got != "^web-.*" {
+		t.Errorf("promQLEscape(plain) = %q, want unchanged", got)
+	}
+}
+
 func TestCPUQueryBuilder(t *testing.T) {
 	q := cpuQuery(0.95, "shop", "^checkout-.*", "14d")
 	for _, want := range []string{

@@ -8,6 +8,10 @@ fixes/UX).
 ## [Unreleased]
 
 ### Fixed
+- **PromQL queries no longer break on workload names with dots/regex metacharacters.** Names like
+  `rbd.csi.ceph.com-nodeplugin` produced an `unknown escape sequence` error (the `\.` from regex
+  escaping is invalid inside a PromQL double-quoted string), so those workloads were skipped.
+  Backslashes are now escaped for the PromQL string context.
 - **Auto-detected Prometheus/OpenCost now reachable from `scan`.** Detection returned an
   in-cluster Service DNS name (`*.svc`) that doesn't resolve on the user's machine, so every
   query failed with "no such host" and the scan silently reported a misleading `100/100, $0`.
