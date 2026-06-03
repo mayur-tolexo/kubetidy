@@ -14,13 +14,14 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynfake "k8s.io/client-go/dynamic/fake"
-	"k8s.io/client-go/kubernetes"
 	kfake "k8s.io/client-go/kubernetes/fake"
 	mfake "k8s.io/metrics/pkg/client/clientset/versioned/fake"
 
 	"github.com/kubetidy/kubetidy/internal/apis/usageprofile"
 	"github.com/kubetidy/kubetidy/internal/kube"
 	"github.com/kubetidy/kubetidy/internal/model"
+	"github.com/kubetidy/kubetidy/internal/pricing"
+	"github.com/kubetidy/kubetidy/internal/usage"
 )
 
 func orchInt32(v int32) *int32 { return &v }
@@ -129,18 +130,45 @@ func TestSelectUsageProviderBadPrometheusFallsBack(t *testing.T) {
 }
 
 func TestSelectUsageProviderAutoDetect(t *testing.T) {
-	svc := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: "prometheus-server", Namespace: "monitoring"},
-		Spec:       corev1.ServiceSpec{Ports: []corev1.ServicePort{{Port: 80}}},
+	// Override the auto-detect seam to return a reachable Prometheus provider, as it would in a
+	// cluster where the API-server-proxy endpoint answers. (The real seam routes through the
+	// proxy + validates reachability, which needs a live cluster.)
+	orig := prometheusAutoProvider
+	defer func() { prometheusAutoProvider = orig }()
+	prometheusAutoProvider = func(_ *kube.Clients, window string) (usage.Provider, string, bool) {
+		p, err := usage.NewPrometheusProvider("http://prom.test:9090", window)
+		if err != nil {
+			t.Fatalf("building test prometheus provider: %v", err)
+		}
+		return p, "monitoring/prometheus-server:80 via the API server proxy", true
 	}
-	clients := &kube.Clients{Kube: kfake.NewSimpleClientset(svc), Metrics: mfake.NewSimpleClientset()}
+
 	var warnings []string
-	p := selectUsageProvider(clients, &scanFlags{window: "14d"}, &warnings)
+	p := selectUsageProvider(orchFakeClients(t), &scanFlags{window: "14d"}, &warnings)
 	if p.Name() != "prometheus" {
 		t.Errorf("provider = %q, want auto-detected prometheus", p.Name())
 	}
 	if !strings.Contains(strings.Join(warnings, " "), "auto-detected") {
 		t.Errorf("warnings = %v, want an auto-detected note", warnings)
+	}
+}
+
+func TestSelectUsageProviderUnreachablePromFallsBack(t *testing.T) {
+	// A detected-but-unreachable Prometheus must fall through (here, to metrics-server) and leave
+	// a fall-back note, rather than committing to an empty Tier 1.
+	orig := prometheusAutoProvider
+	defer func() { prometheusAutoProvider = orig }()
+	prometheusAutoProvider = func(_ *kube.Clients, _ string) (usage.Provider, string, bool) {
+		return nil, "found Prometheus service monitoring/prometheus-server but it did not answer queries; falling back to operator/metrics-server", false
+	}
+
+	var warnings []string
+	p := selectUsageProvider(orchFakeClients(t), &scanFlags{window: "14d"}, &warnings)
+	if p.Name() != "metrics-server" {
+		t.Errorf("provider = %q, want metrics-server fallback", p.Name())
+	}
+	if !strings.Contains(strings.Join(warnings, " "), "did not answer") {
+		t.Errorf("warnings = %v, want a fall-back note", warnings)
 	}
 }
 
@@ -248,10 +276,17 @@ func TestSelectPriceProviderAutoDetect(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// Override the detection seam so auto-detect resolves to the reachable test server.
-	origDetect := detectOpenCost
-	defer func() { detectOpenCost = origDetect }()
-	detectOpenCost = func(kubernetes.Interface) string { return srv.URL }
+	// Override the auto-detect seam so it resolves to the reachable test server (the real seam
+	// routes through the API server proxy, which needs a live cluster).
+	origDetect := openCostAutoProvider
+	defer func() { openCostAutoProvider = origDetect }()
+	openCostAutoProvider = func(ctx context.Context, _ *kube.Clients, window string) (pricing.Provider, string, bool) {
+		p, err := pricing.NewOpenCostProvider(ctx, srv.URL, window)
+		if err != nil {
+			return nil, "", false
+		}
+		return p, "opencost/opencost:9003 via the API server proxy", true
+	}
 
 	var warnings []string
 	p := selectPriceProvider(context.Background(), orchFakeClients(t), &scanFlags{window: "7d"}, &warnings)

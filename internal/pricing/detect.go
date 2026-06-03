@@ -27,13 +27,26 @@ var opencostCandidates = []ocCandidate{
 	{"kubecost", "kubecost-cost-analyzer-abc", 9090},
 }
 
-// DetectOpenCost probes the cluster for a well-known OpenCost (or Kubecost) Service and returns
-// its in-cluster API base URL (e.g. "http://opencost.opencost.svc:9003") when found, or ""
-// when none is present. Like DetectPrometheus, it only confirms the Service exists; the caller
-// (NewOpenCostProvider) validates that the API actually answers. Best-effort, never errors.
-func DetectOpenCost(client kubernetes.Interface) string {
+// OpenCostEndpoint identifies a detected in-cluster OpenCost/Kubecost Service by coordinates, so
+// the caller can reach it either directly (in-cluster) or through the API server proxy (from
+// outside the cluster).
+type OpenCostEndpoint struct {
+	Namespace string
+	Service   string
+	Port      int32
+}
+
+// InClusterURL is the direct, in-cluster API base URL (only resolvable from inside the cluster).
+func (e OpenCostEndpoint) InClusterURL() string {
+	return fmt.Sprintf("http://%s.%s.svc:%d", e.Service, e.Namespace, e.Port)
+}
+
+// DetectOpenCostEndpoint probes the cluster for a well-known OpenCost (or Kubecost) Service and
+// returns its coordinates when found. It only confirms the Service exists; the caller validates
+// that the API answers. Best-effort, never errors.
+func DetectOpenCostEndpoint(client kubernetes.Interface) (OpenCostEndpoint, bool) {
 	if client == nil {
-		return ""
+		return OpenCostEndpoint{}, false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -47,9 +60,20 @@ func DetectOpenCost(client kubernetes.Interface) string {
 		if p := firstServicePort(svc); p != 0 {
 			port = p
 		}
-		return fmt.Sprintf("http://%s.%s.svc:%d", c.service, c.namespace, port)
+		return OpenCostEndpoint{Namespace: c.namespace, Service: c.service, Port: port}, true
 	}
-	return ""
+	return OpenCostEndpoint{}, false
+}
+
+// DetectOpenCost returns the in-cluster API base URL of a detected OpenCost, or "" when none is
+// present. Retained for callers/tests that want the direct URL; new code should prefer
+// DetectOpenCostEndpoint so it can route through the API server proxy.
+func DetectOpenCost(client kubernetes.Interface) string {
+	ep, ok := DetectOpenCostEndpoint(client)
+	if !ok {
+		return ""
+	}
+	return ep.InClusterURL()
 }
 
 // firstServicePort returns the first declared port of a Service, or 0 if none.

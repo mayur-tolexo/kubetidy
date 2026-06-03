@@ -31,13 +31,26 @@ var prometheusCandidates = []candidate{
 	{"default", "prometheus-server", 80},
 }
 
-// DetectPrometheus probes the cluster for a well-known Prometheus Service and returns its
-// in-cluster base URL (e.g. "http://prometheus-server.monitoring.svc:80") when found, or ""
-// when none is present. It only confirms the Service exists; the caller validates that the
+// PrometheusEndpoint identifies a detected in-cluster Prometheus Service by coordinates, so the
+// caller can reach it either directly (in-cluster) or through the API server proxy (from
+// outside the cluster).
+type PrometheusEndpoint struct {
+	Namespace string
+	Service   string
+	Port      int32
+}
+
+// InClusterURL is the direct, in-cluster base URL (only resolvable from inside the cluster).
+func (e PrometheusEndpoint) InClusterURL() string {
+	return fmt.Sprintf("http://%s.%s.svc:%d", e.Service, e.Namespace, e.Port)
+}
+
+// DetectPrometheusEndpoint probes the cluster for a well-known Prometheus Service and returns
+// its coordinates when found. It only confirms the Service exists; the caller validates that the
 // endpoint actually answers queries. It is best-effort and never errors.
-func DetectPrometheus(client kubernetes.Interface) string {
+func DetectPrometheusEndpoint(client kubernetes.Interface) (PrometheusEndpoint, bool) {
 	if client == nil {
-		return ""
+		return PrometheusEndpoint{}, false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -51,9 +64,20 @@ func DetectPrometheus(client kubernetes.Interface) string {
 		if p := firstServicePort(svc); p != 0 {
 			port = p
 		}
-		return fmt.Sprintf("http://%s.%s.svc:%d", c.service, c.namespace, port)
+		return PrometheusEndpoint{Namespace: c.namespace, Service: c.service, Port: port}, true
 	}
-	return ""
+	return PrometheusEndpoint{}, false
+}
+
+// DetectPrometheus returns the in-cluster base URL of a detected Prometheus, or "" when none is
+// present. Retained for callers/tests that want the direct URL; new code should prefer
+// DetectPrometheusEndpoint so it can route through the API server proxy.
+func DetectPrometheus(client kubernetes.Interface) string {
+	ep, ok := DetectPrometheusEndpoint(client)
+	if !ok {
+		return ""
+	}
+	return ep.InClusterURL()
 }
 
 // firstServicePort returns the first declared port of a Service, or 0 if none.

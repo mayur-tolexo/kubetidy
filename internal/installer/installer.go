@@ -46,6 +46,9 @@ var operatorManifest []byte
 //go:embed assets/opencost.yaml
 var opencostManifest []byte
 
+//go:embed assets/prometheus.yaml
+var prometheusManifest []byte
+
 // opencostPrometheusPlaceholder is substituted in the embedded OpenCost manifest with the
 // Prometheus endpoint OpenCost should read usage from.
 const opencostPrometheusPlaceholder = "__PROMETHEUS_URL__"
@@ -94,7 +97,12 @@ type Options struct {
 	// IncludeOpenCost additionally deploys OpenCost (namespace, RBAC, deployment, service) so
 	// scans get precise Tier-2 allocated cost. OpenCost reads from Prometheus.
 	IncludeOpenCost bool
-	// PrometheusURL is the endpoint OpenCost reads usage from. Empty uses defaultPrometheusURL.
+	// IncludePrometheus additionally deploys a minimal in-cluster Prometheus (the producer
+	// OpenCost and Tier-1 scans read from) at prometheus-server.monitoring.svc:80. Callers set
+	// this when no external Prometheus exists.
+	IncludePrometheus bool
+	// PrometheusURL is the endpoint OpenCost reads usage from. Empty uses defaultPrometheusURL
+	// (which is also where IncludePrometheus deploys the bundled Prometheus).
 	PrometheusURL string
 	// Log receives one-line progress messages. nil discards them.
 	Log func(string)
@@ -136,10 +144,7 @@ func Install(ctx context.Context, dyn dynamic.Interface, disco discovery.Discove
 
 	if !opts.IncludeOperator {
 		opts.log("CRD installed (operator skipped)")
-		if opts.IncludeOpenCost {
-			return installOpenCost(ctx, dyn, mapper, opts)
-		}
-		return nil
+		return installExtras(ctx, dyn, mapper, opts)
 	}
 
 	opts.log("applying operator (namespace, RBAC, deployment)")
@@ -151,13 +156,30 @@ func Install(ctx context.Context, dyn dynamic.Interface, disco discovery.Discove
 		return err
 	}
 
+	if err := installExtras(ctx, dyn, mapper, opts); err != nil {
+		return err
+	}
+
+	opts.log("install complete")
+	return nil
+}
+
+// installExtras applies the optional Tier-2 components: a bundled Prometheus (the metrics
+// producer) and OpenCost (the cost source). Prometheus goes first so OpenCost has something to
+// connect to; OpenCost retries until it resolves.
+func installExtras(ctx context.Context, dyn dynamic.Interface, mapper *restmapper.DeferredDiscoveryRESTMapper, opts Options) error {
+	if opts.IncludePrometheus {
+		opts.log("applying bundled Prometheus (monitoring namespace, scrapes kubelet/cAdvisor)")
+		if err := applyManifest(ctx, dyn, mapper, prometheusManifest); err != nil {
+			return err
+		}
+		opts.log("Prometheus installed at " + defaultPrometheusURL)
+	}
 	if opts.IncludeOpenCost {
 		if err := installOpenCost(ctx, dyn, mapper, opts); err != nil {
 			return err
 		}
 	}
-
-	opts.log("install complete")
 	return nil
 }
 
@@ -186,6 +208,10 @@ func OpenCostManifest(prometheusURL string) []byte {
 	}
 	return []byte(strings.ReplaceAll(string(opencostManifest), opencostPrometheusPlaceholder, prometheusURL))
 }
+
+// PrometheusManifest returns the embedded minimal-Prometheus YAML, for callers that want to
+// print it (`init --print --with-prometheus`) instead of applying it.
+func PrometheusManifest() []byte { return prometheusManifest }
 
 // Uninstall removes everything Install created: the operator (Deployment, RBAC, namespace)
 // first, then the CRDs. Deleting a CRD cascades to all of its custom resources, so this also
@@ -216,6 +242,15 @@ func Uninstall(ctx context.Context, dyn dynamic.Interface, disco discovery.Disco
 	if opts.IncludeOpenCost {
 		logf(verb + " OpenCost (namespace, RBAC, deployment, service)")
 		if err := deleteManifest(ctx, dyn, mapper, OpenCostManifest(""), opts); err != nil {
+			return err
+		}
+	}
+
+	// Bundled Prometheus next (only when asked). We delete the objects we created but NOT the
+	// shared "monitoring" namespace, which may hold a user's other tooling.
+	if opts.IncludePrometheus {
+		logf(verb + " bundled Prometheus (RBAC, config, deployment, service; keeping the namespace)")
+		if err := deleteManifestSkipNamespaces(ctx, dyn, mapper, prometheusManifest, opts); err != nil {
 			return err
 		}
 	}
@@ -251,6 +286,9 @@ type UninstallOptions struct {
 	// IncludeOpenCost also removes the OpenCost deployment kubetidy installed. Off by default so
 	// a user's own OpenCost is never touched.
 	IncludeOpenCost bool
+	// IncludePrometheus also removes the bundled Prometheus kubetidy installed (its RBAC, config,
+	// deployment and service — but not the shared "monitoring" namespace). Off by default.
+	IncludePrometheus bool
 	// DryRun reports what would be deleted (per object) without deleting anything.
 	DryRun bool
 	// Log receives one-line progress messages. nil discards them.
@@ -266,6 +304,25 @@ func deleteManifest(ctx context.Context, dyn dynamic.Interface, mapper *restmapp
 		return err
 	}
 	for _, obj := range objs {
+		if err := deleteObject(ctx, dyn, mapper, obj, opts); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// deleteManifestSkipNamespaces is like deleteManifest but leaves Namespace objects in place. It
+// is used to tear down the bundled Prometheus without deleting the shared "monitoring"
+// namespace, which may hold a user's other tooling.
+func deleteManifestSkipNamespaces(ctx context.Context, dyn dynamic.Interface, mapper *restmapper.DeferredDiscoveryRESTMapper, manifest []byte, opts UninstallOptions) error {
+	objs, err := decodeObjects(manifest)
+	if err != nil {
+		return err
+	}
+	for _, obj := range objs {
+		if obj.GetKind() == "Namespace" {
+			continue
+		}
 		if err := deleteObject(ctx, dyn, mapper, obj, opts); err != nil {
 			return err
 		}

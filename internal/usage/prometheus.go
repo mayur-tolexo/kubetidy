@@ -12,6 +12,7 @@ import (
 	promapi "github.com/prometheus/client_golang/api"
 	promv1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	prommodel "github.com/prometheus/common/model"
+	"k8s.io/client-go/rest"
 
 	"github.com/kubetidy/kubetidy/internal/model"
 )
@@ -36,6 +37,45 @@ func NewPrometheusProvider(baseURL, window string) (Provider, error) {
 	return &prometheusProvider{api: promv1.NewAPI(client), window: window}, nil
 }
 
+// NewPrometheusProviderViaAPIProxy builds a Tier-1 provider that reaches an in-cluster
+// Prometheus Service through the Kubernetes API server proxy. This is how `scan` (which runs on
+// the user's machine, not in the cluster) talks to a Service whose DNS name only resolves
+// in-cluster — it reuses the kubeconfig's API server address and credentials, so it works
+// wherever kubectl works, with no port-forward or ingress.
+func NewPrometheusProviderViaAPIProxy(cfg *rest.Config, ep PrometheusEndpoint, window string) (Provider, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("nil rest config")
+	}
+	if _, err := parseWindow(window); err != nil {
+		return nil, fmt.Errorf("invalid window %q: %w", window, err)
+	}
+	transport, err := rest.TransportFor(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("building API server transport: %w", err)
+	}
+	// The service-proxy subresource path: /api/v1/namespaces/<ns>/services/<svc>:<port>/proxy.
+	// The Prometheus client appends its own /api/v1/query etc. onto this base.
+	base := strings.TrimRight(cfg.Host, "/") +
+		fmt.Sprintf("/api/v1/namespaces/%s/services/%s:%d/proxy", ep.Namespace, ep.Service, ep.Port)
+	client, err := promapi.NewClient(promapi.Config{Address: base, RoundTripper: transport})
+	if err != nil {
+		return nil, err
+	}
+	return &prometheusProvider{api: promv1.NewAPI(client), window: window}, nil
+}
+
+// Reachable reports whether a Prometheus provider's endpoint answers a trivial query. It's used
+// to validate an auto-detected endpoint before committing the scan to Tier 1, so an unreachable
+// or wrong endpoint falls back instead of silently producing empty (misleading) results.
+func Reachable(ctx context.Context, p Provider) bool {
+	pp, ok := p.(*prometheusProvider)
+	if !ok {
+		return false
+	}
+	_, _, err := pp.api.Query(ctx, "up", time.Now())
+	return err == nil
+}
+
 func (p *prometheusProvider) Name() string             { return "prometheus" }
 func (p *prometheusProvider) Tier() model.EvidenceTier { return model.TierHistorical }
 
@@ -54,7 +94,7 @@ func (p *prometheusProvider) Usage(ctx context.Context, w model.Workload) (map[s
 	if err != nil {
 		return nil, fmt.Errorf("invalid window %q: %w", p.window, err)
 	}
-	regex := podRegex(w.Name)
+	regex := promQLEscape(podRegex(w.Name))
 
 	cpuP50, err := p.queryVector(ctx, cpuQuery(0.5, w.Namespace, regex, p.window))
 	if err != nil {
@@ -226,6 +266,15 @@ func memAvgQuery(namespace, podRegex, window string) string {
 // formatQuantile renders a quantile without a trailing ".0" where possible (0.95, 0.5).
 func formatQuantile(q float64) string {
 	return strconv.FormatFloat(q, 'g', -1, 64)
+}
+
+// promQLEscape makes a regex safe to embed inside a PromQL double-quoted string. PromQL strings
+// process Go-style backslash escapes, so a regex from regexp.QuoteMeta (e.g. `^a\.b-.*` for a
+// workload named "a.b") must have its backslashes doubled — otherwise PromQL rejects `\.`, `\+`,
+// etc. as "unknown escape sequence". Real-cluster names with dots (e.g. CSI drivers like
+// "rbd.csi.ceph.com-nodeplugin") hit this.
+func promQLEscape(s string) string {
+	return strings.ReplaceAll(s, `\`, `\\`)
 }
 
 // podRegex builds an anchored PromQL regex matching pods owned by the named workload,
